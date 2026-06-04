@@ -40,6 +40,11 @@ sealed class NagiosProblem {
     abstract val isFlapping: Boolean
     abstract val isSoftState: Boolean    // state_type == 0 / "SOFT"
 
+    // Set by NagiosApi.fetchProblems() so the dashboard and notifications know the source.
+    // Empty string in single-instance mode for backward compatibility.
+    open val instanceId: String get() = ""
+    open val instanceName: String get() = ""
+
     data class ServiceProblem(
         override val hostName: String,
         val serviceName: String,
@@ -55,6 +60,8 @@ sealed class NagiosProblem {
         val hostStatus: Int? = null,
         val hostAcknowledged: Boolean = false,
         val hostScheduledDowntimeDepth: Int = 0,
+        override val instanceId: String = "",
+        override val instanceName: String = "",
     ) : NagiosProblem() {
         override val uniqueId: String get() = "service|$hostName|$serviceName"
     }
@@ -69,6 +76,8 @@ sealed class NagiosProblem {
         override val scheduledDowntimeDepth: Int = 0,
         override val isFlapping: Boolean = false,
         override val isSoftState: Boolean = false,
+        override val instanceId: String = "",
+        override val instanceName: String = "",
     ) : NagiosProblem() {
         override val uniqueId: String get() = "host|$hostName"
     }

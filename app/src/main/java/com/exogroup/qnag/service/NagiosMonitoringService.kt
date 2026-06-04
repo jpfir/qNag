@@ -19,6 +19,7 @@ import com.exogroup.qnag.data.instanceFingerprintPrefix
 import com.exogroup.qnag.data.problemFingerprint
 import com.exogroup.qnag.data.shouldNotify
 import com.exogroup.qnag.notifications.NotificationHelper
+import com.exogroup.qnag.notifications.ProblemToNotify
 import com.exogroup.qnag.worker.BackgroundPollingScheduler
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -112,10 +113,10 @@ class NagiosMonitoringService : Service() {
             val notifSettings = settings.notificationSettings
             val cmdSettings = settings.commandSettings
 
-            val intervalMs = notifSettings.refreshIntervalMinutes
-                .coerceAtLeast(15) * 60_000L
+            // Foreground service uses its own interval (seconds), independent of WorkManager's
+            // 15-minute minimum.  Minimum enforced at 30 seconds to avoid hammering the server.
+            val intervalMs = cmdSettings.foregroundPollingIntervalSeconds.coerceAtLeast(30) * 1000L
 
-            // If notifications were disabled while we were running, stop the service.
             if (!notifSettings.notificationsEnabled) {
                 stopSelf()
                 return
@@ -129,6 +130,7 @@ class NagiosMonitoringService : Service() {
 
             var fingerprints = loadFingerprints()
             var failedIds = loadFailedInstances()
+            val toNotify = mutableListOf<ProblemToNotify>()
 
             for (instance in targets) {
                 try {
@@ -146,7 +148,7 @@ class NagiosMonitoringService : Service() {
                         val fp = problemFingerprint(instance.id, problem)
                         val isNew = fp !in knownForInstance
                         if (!cmdSettings.notifyOnlyNewProblems || isNew) {
-                            NotificationHelper.notifyProblem(applicationContext, instance.id, instance.name, problem)
+                            toNotify += ProblemToNotify(instance.id, instance.name, problem)
                         }
                     }
 
@@ -156,7 +158,7 @@ class NagiosMonitoringService : Service() {
                     }
 
                 } catch (e: Exception) {
-                    // Never log the exception verbatim — it may contain the Nagios URL which could include credentials
+                    // Never log verbatim — may contain credentials
                     val safeError = sanitizeError(e.message)
                     if (cmdSettings.notifyOnFetchFailure && instance.id !in failedIds) {
                         NotificationHelper.notifyFetchFailure(applicationContext, instance.id, instance.name, safeError)
@@ -164,6 +166,8 @@ class NagiosMonitoringService : Service() {
                     }
                 }
             }
+
+            NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
 
             saveFingerprints(fingerprints)
             saveFailedInstances(failedIds)

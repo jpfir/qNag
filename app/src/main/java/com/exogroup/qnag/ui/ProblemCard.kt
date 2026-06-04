@@ -31,6 +31,8 @@ fun ProblemCard(
     // isAcknowledged: server ack OR local overlay; isPendingAck: local overlay only (not yet confirmed)
     isAcknowledged: Boolean = false,
     isPendingAck: Boolean = false,
+    // Non-empty in ALL-instances view — shows a small badge indicating the source instance
+    instanceName: String = "",
     onToggleSelect: () -> Unit,
     onLongPress: () -> Unit,
     onAck: () -> Unit,
@@ -106,6 +108,7 @@ fun ProblemCard(
                     isExpanded = isExpanded,
                     isAcknowledged = isAcknowledged,
                     isPendingAck = isPendingAck,
+                    instanceName = instanceName,
                 )
             }
         }
@@ -118,6 +121,7 @@ private fun ProblemCardContent(
     isExpanded: Boolean,
     isAcknowledged: Boolean,
     isPendingAck: Boolean,
+    instanceName: String = "",
 ) {
     Column(modifier = Modifier.padding(12.dp)) {
         when (problem) {
@@ -127,11 +131,15 @@ private fun ProblemCardContent(
                         Text(problem.hostName, fontWeight = FontWeight.Bold)
                         Text(problem.serviceName, fontWeight = FontWeight.SemiBold)
                     }
-                    if (isAcknowledged || isPendingAck) {
-                        Spacer(Modifier.width(6.dp))
-                        AckBadge(pending = isPendingAck && !problem.acknowledged)
-                        Spacer(Modifier.width(6.dp))
+                    if (instanceName.isNotEmpty()) {
+                        Spacer(Modifier.width(4.dp))
+                        InstanceBadge(instanceName)
                     }
+                    if (isAcknowledged || isPendingAck) {
+                        Spacer(Modifier.width(4.dp))
+                        AckBadge(pending = isPendingAck && !problem.acknowledged)
+                    }
+                    Spacer(Modifier.width(4.dp))
                     StatusBadge(serviceStatusLabel(problem.status))
                 }
             }
@@ -142,11 +150,15 @@ private fun ProblemCardContent(
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.weight(1f),
                     )
-                    if (isAcknowledged || isPendingAck) {
-                        Spacer(Modifier.width(6.dp))
-                        AckBadge(pending = isPendingAck && !problem.acknowledged)
-                        Spacer(Modifier.width(6.dp))
+                    if (instanceName.isNotEmpty()) {
+                        Spacer(Modifier.width(4.dp))
+                        InstanceBadge(instanceName)
                     }
+                    if (isAcknowledged || isPendingAck) {
+                        Spacer(Modifier.width(4.dp))
+                        AckBadge(pending = isPendingAck && !problem.acknowledged)
+                    }
+                    Spacer(Modifier.width(4.dp))
                     StatusBadge(hostStatusLabel(problem.status))
                 }
             }
@@ -160,6 +172,22 @@ private fun ProblemCardContent(
                 overflow = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+/** Small teal badge showing the source instance name — visible in ALL-instances view. */
+@Composable
+private fun InstanceBadge(name: String) {
+    Surface(
+        shape = RoundedCornerShape(4.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+    ) {
+        Text(
+            text = name,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+        )
     }
 }
 

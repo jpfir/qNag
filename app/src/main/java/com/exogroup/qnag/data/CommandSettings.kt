@@ -16,16 +16,28 @@ data class CommandSettings(
     val showBatteryOptimizationHint: Boolean = true,
 
     // ── Foreground monitoring service ────────────────────────────────────────
-    // When true, a foreground service is started from the app UI and keeps polling
-    // in the foreground. The user must enable this explicitly; it is NOT auto-started.
     val keepMonitoringActive: Boolean = false,
+    // Interval for the foreground service polling — independent of WorkManager's 15-min minimum.
+    val foregroundPollingIntervalSeconds: Int = 60,
 
     // ── Nagios date format for cmd.cgi start_time ─────────────────────────────
-    // Nullable so Gson can safely set it to null for pre-existing stored settings;
-    // use resolvedDateFormat for actual access — it always returns a non-null value.
+    // Nullable so Gson can safely set it to null for pre-existing stored settings.
+    // resolvedDateFormat always returns a non-null value.
     val nagiosDateFormat: NagiosDateFormat? = null,
+
+    // ── Diagnostics ───────────────────────────────────────────────────────────
+    // When true, logs safe command submission info (field names, HTTP status, sanitized
+    // response snippet) to help diagnose recheck/ACK failures.
+    // NEVER logs passwords, Authorization headers, or cookie values.
+    val debugCommandSubmission: Boolean = false,
 ) {
-    /** Returns the configured date format, defaulting to US if not set. */
+    /**
+     * Returns the configured date format.
+     * Defaults to ISO8601 ("yyyy-MM-dd HH:mm:ss") to match qNagstamon behavior —
+     * this is the format used by Nagios installations with date_format=iso8601 in nagios.cfg,
+     * which is the most common default.  If your Nagios uses a different format, change this
+     * setting to match the `date_format` value in nagios.cfg.
+     */
     val resolvedDateFormat: NagiosDateFormat
-        get() = nagiosDateFormat ?: NagiosDateFormat.US
+        get() = nagiosDateFormat ?: NagiosDateFormat.ISO8601
 }

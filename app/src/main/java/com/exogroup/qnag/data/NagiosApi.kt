@@ -9,11 +9,11 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 class NagiosApi {
 
-    // Reused across all calls — do not create per-request
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
@@ -25,8 +25,12 @@ class NagiosApi {
         val baseUrl = instance.url.trimEnd('/')
         val credential = Credentials.basic(instance.username, instance.password)
 
+        // Tag each problem with its source instance so the dashboard and notifications
+        // can distinguish problems from different instances in ALL mode.
         val services = fetchServiceProblems(baseUrl, credential)
+            .map { it.copy(instanceId = instance.id, instanceName = instance.name) }
         val hosts = fetchHostProblems(baseUrl, credential)
+            .map { it.copy(instanceId = instance.id, instanceName = instance.name) }
 
         return (hosts + services).sortedWith(
             compareBy({ severityRank(it) }, { it.hostName }, { serviceNameOf(it) })
@@ -60,7 +64,6 @@ class NagiosApi {
                     serviceName = serviceName,
                     pluginOutput = d.optString("plugin_output", "No output"),
                     status = d.optInt("status", NagiosStatus.SERVICE_UNKNOWN),
-                    // Support both "problem_has_been_acknowledged" and "acknowledged" field names
                     acknowledged = d.optBooleanSafe("problem_has_been_acknowledged") ||
                             d.optBooleanSafe("acknowledged"),
                     notificationsEnabled = d.optBooleanSafe("notifications_enabled", default = true),
@@ -68,7 +71,6 @@ class NagiosApi {
                     scheduledDowntimeDepth = d.optInt("scheduled_downtime_depth", 0),
                     isFlapping = d.optBooleanSafe("is_flapping"),
                     isSoftState = parseSoftState(d, "state_type"),
-                    // TODO: host_status in service details may not be available in all Nagios versions
                     hostStatus = if (d.has("host_status")) d.optInt("host_status") else null,
                     hostAcknowledged = d.optBooleanSafe("host_problem_has_been_acknowledged") ||
                             d.optBooleanSafe("host_acknowledged"),
@@ -83,7 +85,6 @@ class NagiosApi {
         val url = "$baseUrl/nagios/cgi-bin/statusjson.cgi".toHttpUrl().newBuilder()
             .addEncodedQueryParameter("query", "hostlist")
             .addEncodedQueryParameter("details", "true")
-            // TODO: Verify exact hoststatus parameter values for your Nagios version
             .addEncodedQueryParameter("hoststatus", "down+unreachable")
             .build()
 
@@ -116,18 +117,20 @@ class NagiosApi {
 
     // ── Commands (cmd.cgi) ────────────────────────────────────────────────────
     //
-    // Two-step CSRF-aware command submission for modern Nagios Core:
-    //   1. GET cmd.cgi?cmd_typ=<n>&cmd_mod=2  — capture NagFormId cookie + hidden field
-    //   2. POST cmd.cgi with the form fields + cookie + nagFormId field
+    // CSRF-aware two-step flow (where needed):
+    //   1. GET cmd.cgi?cmd_typ=<n>&host=<h>[&service=<s>]  — capture session cookies + NagFormId
+    //   2. POST cmd.cgi with all form fields + cookies + nagFormId
     //
-    // If the GET response contains no NagFormId, falls back to direct POST (Nagios XI,
-    // older Core without CSRF protection).
+    // qNagstamon uses direct POST without a preflight (no CSRF) and cmd_typ=7/96 with force_check=on.
+    // We keep the preflight to support CSRF-protected Nagios Core, but use the same cmd_typ values.
     //
-    // ACK command types:   33 = ACKNOWLEDGE_HOST_PROBLEM, 34 = ACKNOWLEDGE_SVC_PROBLEM
-    // Recheck command types: 98 = SCHEDULE_FORCED_HOST_CHECK, 54 = SCHEDULE_FORCED_SVC_CHECK
+    // ACK command types:       33 = ACKNOWLEDGE_HOST_PROBLEM, 34 = ACKNOWLEDGE_SVC_PROBLEM
+    // Recheck command types:   7  = CMD_SCHEDULE_SVC_CHECK (+ force_check=on for forced)
+    //                          96 = CMD_SCHEDULE_HOST_CHECK (+ force_check=on for forced)
     //
-    // start_time format depends on nagios.cfg date_format; default is US (MM-dd-yyyy HH:mm:ss).
-    // TODO: verify date_format for your Nagios installation if recheck is silently ignored.
+    // start_time is formatted in UTC to match qNagstamon behavior.
+    // The default date format is ISO8601 ("yyyy-MM-dd HH:mm:ss") which matches nagios.cfg
+    // date_format=iso8601.  Change the setting if your server uses a different date_format.
 
     fun acknowledgeProblem(
         instance: NagiosInstance,
@@ -152,15 +155,25 @@ class NagiosApi {
             }
             .build()
 
-        executeCommandWithCsrf("$baseUrl/nagios/cgi-bin/cmd.cgi", credential, body)
+        executeCommandWithCsrf("$baseUrl/nagios/cgi-bin/cmd.cgi", credential, body, "ACK", settings)
     }
 
     fun recheckProblem(instance: NagiosInstance, problem: NagiosProblem, settings: CommandSettings) {
         val baseUrl = instance.url.trimEnd('/')
         val credential = Credentials.basic(instance.username, instance.password)
-        val cmdType = if (problem is NagiosProblem.HostProblem) "98" else "54"
 
-        val startTime = SimpleDateFormat(settings.resolvedDateFormat.pattern, Locale.US).format(Date())
+        // Use cmd_typ=7 (CMD_SCHEDULE_SVC_CHECK) for services and cmd_typ=96
+        // (CMD_SCHEDULE_HOST_CHECK) for hosts, matching qNagstamon exactly.
+        // force_check=on makes this a "forced" recheck through the web form.
+        // The old 54/98 IDs are the raw Nagios command numbers and fail with CSRF-protected
+        // Nagios Core because the form for 54/98 expects different field sets.
+        val cmdType = if (problem is NagiosProblem.HostProblem) "96" else "7"
+
+        // Format start_time in UTC, matching qNagstamon:
+        //   datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        val sdf = SimpleDateFormat(settings.resolvedDateFormat.pattern, Locale.US)
+        sdf.timeZone = TimeZone.getTimeZone("UTC")
+        val startTime = sdf.format(Date())
 
         val body = FormBody.Builder()
             .add("cmd_mod", "2")
@@ -173,10 +186,9 @@ class NagiosApi {
             }
             .build()
 
-        executeCommandWithCsrf("$baseUrl/nagios/cgi-bin/cmd.cgi", credential, body)
+        executeCommandWithCsrf("$baseUrl/nagios/cgi-bin/cmd.cgi", credential, body, "recheck", settings)
     }
 
-    // Convenience wrappers for bulk operations
     fun acknowledgeProblems(
         instance: NagiosInstance,
         problems: List<NagiosProblem>,
@@ -191,112 +203,142 @@ class NagiosApi {
 
     // ── CSRF-aware command execution ──────────────────────────────────────────
 
-    /**
-     * Two-step command flow:
-     *  1. GET cmd.cgi with cmd_typ/cmd_mod to obtain the NagFormId CSRF token.
-     *  2. POST with the CSRF cookie + nagFormId field (or direct POST if no token found).
-     */
-    private fun executeCommandWithCsrf(cmdUrl: String, credential: String, body: FormBody) {
-        // ── Step 1: GET to obtain CSRF token ─────────────────────────────────
-        // Include cmd_typ, host, service in the preflight so Nagios renders the correct form.
-        // Intentionally exclude cmd_mod=2 and comment/data fields — those go only in the POST.
-        val prefightParams = setOf("cmd_typ", "host", "service")
-        val getUrlBuilder = cmdUrl.toHttpUrl().newBuilder()
-        for (i in 0 until body.size) {
-            if (body.name(i) in prefightParams) {
-                getUrlBuilder.addQueryParameter(body.name(i), body.value(i))
+    private fun executeCommandWithCsrf(
+        cmdUrl: String,
+        credential: String,
+        body: FormBody,
+        commandKind: String = "command",
+        settings: CommandSettings? = null,
+    ) {
+        val debug = settings?.debugCommandSubmission == true
+
+        // ── Preflight GET: obtain session cookies and CSRF token ──────────────
+        // Include cmd_typ, host, service — Nagios needs them to render the correct form.
+        // Exclude cmd_mod=2 and comment/data fields (those go only in the POST).
+        val preflightParams = setOf("cmd_typ", "host", "service")
+        val getUrl = cmdUrl.toHttpUrl().newBuilder().apply {
+            for (i in 0 until body.size) {
+                if (body.name(i) in preflightParams) addQueryParameter(body.name(i), body.value(i))
             }
+        }.build()
+
+        if (debug) {
+            val fieldNames = (0 until body.size).map { body.name(it) }
+            android.util.Log.d("qNag", "[$commandKind] preflight GET cmd_typ=${getUrl.queryParameter("cmd_typ")} bodyFields=$fieldNames")
         }
 
-        val getRequest = Request.Builder()
-            .url(getUrlBuilder.build())
-            .header("Authorization", credential)
-            .get()
-            .build()
-
-        val (csrfCookie, csrfField) = client.newCall(getRequest).execute().use { response ->
-            val cookie = response.headers("Set-Cookie")
-                .firstOrNull { it.startsWith("NagFormId=", ignoreCase = true) }
-                ?.substringAfter("=")?.substringBefore(";")?.trim()
+        val csrf = client.newCall(
+            Request.Builder().url(getUrl).header("Authorization", credential).get().build()
+        ).execute().use { response ->
+            // Collect ALL Set-Cookie values — session cookies, NagFormId, reverse-proxy tokens
+            val cookies = response.headers("Set-Cookie").mapNotNull { raw ->
+                val name = raw.substringBefore("=").trim().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                val value = raw.substringAfter("=").substringBefore(";").trim()
+                name to value
+            }
             val html = response.body?.string() ?: ""
-            cookie to parseCsrfField(html)
+            val nagFormIdFromField = parseCsrfField(html)
+            val nagFormIdFromCookie = cookies.find { (n, _) -> n.equals("NagFormId", ignoreCase = true) }?.second
+            val cookieHeader = cookies.joinToString("; ") { (n, v) -> "$n=$v" }
+
+            if (debug) android.util.Log.d("qNag",
+                "[$commandKind] preflight status=${response.code} cookies=${cookies.size} nagFormId(field)=${nagFormIdFromField != null} nagFormId(cookie)=${nagFormIdFromCookie != null}")
+
+            CsrfData(cookieHeader, nagFormIdFromField ?: nagFormIdFromCookie)
         }
 
-        // If the hidden field is absent but the cookie exists, use the cookie value as fallback.
-        val effectiveCsrfField = csrfField ?: csrfCookie
+        // ── POST ──────────────────────────────────────────────────────────────
+        val postBody = FormBody.Builder().apply {
+            for (i in 0 until body.size) add(body.name(i), body.value(i))
+            if (csrf.nagFormId != null) add("nagFormId", csrf.nagFormId)
+            add("btnSubmit", "Commit")
+        }.build()
 
-        // ── Step 2: POST with CSRF token if present ───────────────────────────
-        val postBodyBuilder = FormBody.Builder()
-        for (i in 0 until body.size) {
-            postBodyBuilder.add(body.name(i), body.value(i))
+        if (debug) {
+            val postFields = (0 until postBody.size).map { postBody.name(it) }
+            android.util.Log.d("qNag", "[$commandKind] POST fields=$postFields hasCookies=${csrf.cookieHeader.isNotEmpty()}")
         }
-        if (effectiveCsrfField != null) {
-            postBodyBuilder.add("nagFormId", effectiveCsrfField)
-        }
-        postBodyBuilder.add("btnSubmit", "Commit")
 
         val postRequest = Request.Builder()
             .url(cmdUrl)
             .header("Authorization", credential)
-            .apply { if (csrfCookie != null) header("Cookie", "NagFormId=$csrfCookie") }
-            .post(postBodyBuilder.build())
+            .header("Referer", cmdUrl)   // qNagstamon sends Referer; some proxy configs require it
+            .apply { if (csrf.cookieHeader.isNotEmpty()) header("Cookie", csrf.cookieHeader) }
+            .post(postBody)
             .build()
 
         client.newCall(postRequest).execute().use { response ->
+            val text = response.body?.string() ?: ""
+            if (debug) android.util.Log.d("qNag",
+                "[$commandKind] POST status=${response.code} snippet=${sanitizeForLog(text)}")
+
             if (!response.isSuccessful) {
                 throw Exception("HTTP ${response.code}: ${response.message}")
             }
-            val text = response.body?.string() ?: ""
-            if (containsNagiosError(text)) {
-                throw Exception("Nagios rejected the command — check user permissions.")
-            }
+            classifyNagiosResponse(text, commandKind)
         }
     }
 
-    // ── Internal helpers ──────────────────────────────────────────────────────
+    /**
+     * Classify the Nagios cmd.cgi response and throw a specific exception on failure.
+     *
+     * Nagios returns HTTP 200 even for errors; the actual result is in the HTML body.
+     * Response categories (most specific first):
+     *  - Explicit success: "successfully submitted" → return normally
+     *  - CSRF: "invalid or missing csrf" / nagformid + invalid → CSRF error
+     *  - Permission: "not authorized" / "do not have permission" / "read only"
+     *  - Field / date format: "go back and verify" / "required information" / "bad format"
+     *  - Generic error marker: "error:"
+     *  - Unknown / no match → assume success (some Nagios versions redirect or use custom text)
+     */
+    private fun classifyNagiosResponse(html: String, commandKind: String) {
+        val lower = html.lowercase()
+        if (lower.contains("successfully submitted")) return
+
+        if (lower.contains("invalid or missing csrf") ||
+            (lower.contains("nagformid") && (lower.contains("invalid") || lower.contains("missing")))) {
+            throw Exception("Nagios rejected the CSRF form ID/cookie. Try again.")
+        }
+        if (lower.contains("not authorized") ||
+            lower.contains("do not have permission") ||
+            lower.contains("read only")) {
+            throw Exception("Nagios rejected the $commandKind: not authorized. Check user permissions.")
+        }
+        if (lower.contains("go back and verify") ||
+            lower.contains("required information") ||
+            lower.contains("bad format")) {
+            throw Exception("Nagios rejected the $commandKind: a required field or date format was invalid. Check the 'Nagios date format' setting in qNag.")
+        }
+        if (lower.contains("error:") && !lower.contains("successfully")) {
+            throw Exception("Nagios returned an error for the $commandKind.")
+        }
+        // No recognisable error — treat as success (redirect, custom theme, or confirmation page)
+    }
 
     /**
      * Parse the nagFormId hidden field from Nagios Core HTML.
-     * Handles both attribute orderings (name-then-value and value-then-name).
+     * Handles both attribute orderings.
      */
     private fun parseCsrfField(html: String): String? {
-        val p1 = Regex(
-            """<input[^>]+name\s*=\s*["']nagFormId["'][^>]+value\s*=\s*["']([^"']+)["']""",
-            RegexOption.IGNORE_CASE
-        )
-        val p2 = Regex(
-            """<input[^>]+value\s*=\s*["']([^"']+)["'][^>]+name\s*=\s*["']nagFormId["']""",
-            RegexOption.IGNORE_CASE
-        )
+        val p1 = Regex("""<input[^>]+name\s*=\s*["']nagFormId["'][^>]+value\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        val p2 = Regex("""<input[^>]+value\s*=\s*["']([^"']+)["'][^>]+name\s*=\s*["']nagFormId["']""", RegexOption.IGNORE_CASE)
         return (p1.find(html) ?: p2.find(html))?.groupValues?.getOrNull(1)
     }
 
     private fun execute(url: String, credential: String): String {
-        val request = Request.Builder()
-            .url(url)
-            .header("Authorization", credential)
-            .build()
+        val request = Request.Builder().url(url).header("Authorization", credential).build()
         client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw Exception("HTTP ${response.code}: ${response.message}")
-            }
+            if (!response.isSuccessful) throw Exception("HTTP ${response.code}: ${response.message}")
             return response.body?.string()?.takeIf { it.isNotBlank() }
                 ?: throw Exception("Empty response from Nagios")
         }
     }
 
-    // Nagios returns HTTP 200 even for errors; look for error markers in HTML.
-    private fun containsNagiosError(html: String): Boolean {
-        val lower = html.lowercase()
-        return lower.contains("error:") ||
-                lower.contains("not authorized") ||
-                lower.contains("invalid command") ||
-                lower.contains("you do not have permission") ||
-                lower.contains("csrf") ||
-                lower.contains("invalid or missing")
-    }
+    private fun sanitizeForLog(text: String): String =
+        text.take(300)
+            .replace(Regex("https?://[^/\\s]*@[^/\\s]*"), "[redacted-url]")
+            .replace(Regex("\\s+"), " ")
 
-    // Nagios XI: state_type is integer (0=SOFT, 1=HARD); older versions may use strings.
     private fun parseSoftState(obj: JSONObject, key: String): Boolean {
         val raw = obj.opt(key) ?: return false
         return when {
@@ -306,10 +348,6 @@ class NagiosApi {
         }
     }
 
-    /**
-     * Safe boolean parsing that handles int (0/1), Boolean, and String representations.
-     * Nagios versions vary in how they encode boolean fields in statusjson.
-     */
     private fun JSONObject.optBooleanSafe(key: String, default: Boolean = false): Boolean {
         return when (val v = opt(key)) {
             null -> default
@@ -332,4 +370,6 @@ class NagiosApi {
 
     private fun serviceNameOf(p: NagiosProblem): String =
         if (p is NagiosProblem.ServiceProblem) p.serviceName else ""
+
+    private data class CsrfData(val cookieHeader: String, val nagFormId: String?)
 }

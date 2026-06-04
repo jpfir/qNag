@@ -11,6 +11,7 @@ import com.exogroup.qnag.data.instanceFingerprintPrefix
 import com.exogroup.qnag.data.problemFingerprint
 import com.exogroup.qnag.data.shouldNotify
 import com.exogroup.qnag.notifications.NotificationHelper
+import com.exogroup.qnag.notifications.ProblemToNotify
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
@@ -48,66 +49,53 @@ class NagiosPollingWorker(
         var failedInstanceIds = loadFailedInstances()
 
         val targets = instances.filter { it.enabled && it.notificationsEnabled }
+        // Accumulate all notifications across all instances so notifyBatch can
+        // apply cross-instance anti-flood grouping (e.g. "12 CRITICAL across 2 instances").
+        val toNotify = mutableListOf<ProblemToNotify>()
 
         for (instance in targets) {
             try {
                 val problems = withContext(Dispatchers.IO) { api.fetchProblems(instance) }
 
-                // Apply the user's dashboard filters so notifications respect them
                 val filtered = applyFilters(problems, settings.filterSettings)
 
-                // Fingerprints for all problems in this poll (regardless of shouldNotify)
                 val currentFingerprints = filtered
                     .map { problemFingerprint(instance.id, it) }
                     .toSet()
 
-                // Fingerprints previously stored for this instance
-                // Use separator-based prefix to avoid a UUID being a prefix of another UUID
                 val prefix = instanceFingerprintPrefix(instance.id)
                 val knownForInstance = fingerprints
                     .filter { it.startsWith(prefix) }
                     .toSet()
 
-                // Remove fingerprints for problems that have resolved
                 fingerprints = (fingerprints - knownForInstance) + currentFingerprints
 
-                // Notify for problems that pass the notification guards
                 for (problem in filtered) {
                     if (!shouldNotify(problem, notifSettings)) continue
                     val fp = problemFingerprint(instance.id, problem)
                     val isNew = fp !in knownForInstance
                     if (!cmdSettings.notifyOnlyNewProblems || isNew) {
-                        NotificationHelper.notifyProblem(
-                            applicationContext,
-                            instance.id,
-                            instance.name,
-                            problem,
-                        )
+                        toNotify += ProblemToNotify(instance.id, instance.name, problem)
                     }
                 }
 
-                // Clear any lingering fetch-failure state for this instance
                 if (instance.id in failedInstanceIds) {
                     failedInstanceIds = failedInstanceIds - instance.id
                     NotificationHelper.cancelFetchFailure(applicationContext, instance.id)
                 }
 
             } catch (e: Exception) {
-                // Never log the exception verbatim — it may contain the Nagios URL which
-                // could include credentials in some configurations.
+                // Never log the exception verbatim — it may contain credentials
                 val safeError = sanitizeError(e.message)
-
                 if (cmdSettings.notifyOnFetchFailure && instance.id !in failedInstanceIds) {
-                    NotificationHelper.notifyFetchFailure(
-                        applicationContext,
-                        instance.id,
-                        instance.name,
-                        safeError,
-                    )
+                    NotificationHelper.notifyFetchFailure(applicationContext, instance.id, instance.name, safeError)
                     failedInstanceIds = failedInstanceIds + instance.id
                 }
             }
         }
+
+        // Post all notifications in one batch for cross-instance flood protection
+        NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
 
         saveFingerprints(fingerprints)
         saveFailedInstances(failedInstanceIds)

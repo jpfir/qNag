@@ -104,10 +104,12 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 notifyOnlyNewProblems = o.get("notifyOnlyNewProblems")?.asBoolean ?: true,
                 showBatteryOptimizationHint = o.get("showBatteryOptimizationHint")?.asBoolean ?: true,
                 keepMonitoringActive = o.get("keepMonitoringActive")?.asBoolean ?: false,
+                foregroundPollingIntervalSeconds = o.get("foregroundPollingIntervalSeconds")?.asInt ?: 60,
                 nagiosDateFormat = try {
                     o.get("nagiosDateFormat")?.takeIf { !it.isJsonNull }?.asString
                         ?.let { NagiosDateFormat.valueOf(it) }
                 } catch (_: Exception) { null },
+                debugCommandSubmission = o.get("debugCommandSubmission")?.asBoolean ?: false,
             )
         } catch (_: Exception) { CommandSettings() }
     }
@@ -127,6 +129,9 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 notifyOnlyHardState = o.get("notifyOnlyHardState")?.asBoolean ?: true,
                 respectDowntime = o.get("respectDowntime")?.asBoolean ?: true,
                 refreshIntervalMinutes = o.get("refreshIntervalMinutes")?.asInt ?: 15,
+                globalSoundCooldownSeconds = o.get("globalSoundCooldownSeconds")?.asInt ?: 300,
+                perStateSoundCooldownSeconds = o.get("perStateSoundCooldownSeconds")?.asInt ?: 300,
+                repeatSameProblemSound = o.get("repeatSameProblemSound")?.asBoolean ?: false,
             )
         } catch (_: Exception) { NotificationSettings() }
     }

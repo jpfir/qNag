@@ -1,5 +1,8 @@
 package com.exogroup.qnag.ui
 
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
@@ -7,9 +10,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.exogroup.qnag.data.NotificationSettings
+import com.exogroup.qnag.notifications.NotificationHelper
 
 private const val MIN_INTERVAL = 15
 
@@ -25,8 +30,15 @@ fun NotificationSettingsSection(
     notificationPermissionGranted: Boolean = true,
     onUpdate: (NotificationSettings) -> Unit,
 ) {
+    val context = LocalContext.current
     var intervalText by remember(settings.refreshIntervalMinutes) {
         mutableStateOf(settings.refreshIntervalMinutes.toString())
+    }
+    var globalCooldownText by remember(settings.globalSoundCooldownSeconds) {
+        mutableStateOf(settings.globalSoundCooldownSeconds.toString())
+    }
+    var perStateCooldownText by remember(settings.perStateSoundCooldownSeconds) {
+        mutableStateOf(settings.perStateSoundCooldownSeconds.toString())
     }
     val intervalError: String? = intervalText.toIntOrNull().let { v ->
         when {
@@ -127,6 +139,74 @@ fun NotificationSettingsSection(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+
+                Spacer(Modifier.height(8.dp))
+                NotifSubheader("Sound & anti-flood")
+
+                OutlinedTextField(
+                    value = globalCooldownText,
+                    onValueChange = { raw ->
+                        globalCooldownText = raw
+                        raw.toIntOrNull()?.takeIf { it >= 0 }?.let {
+                            onUpdate(settings.copy(globalSoundCooldownSeconds = it))
+                        }
+                    },
+                    label = { Text("Global sound cooldown (seconds)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    supportingText = { Text("0 = no limit. Prevents sound storms across all states.") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = perStateCooldownText,
+                    onValueChange = { raw ->
+                        perStateCooldownText = raw
+                        raw.toIntOrNull()?.takeIf { it >= 0 }?.let {
+                            onUpdate(settings.copy(perStateSoundCooldownSeconds = it))
+                        }
+                    },
+                    label = { Text("Per-state sound cooldown (seconds)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    supportingText = { Text("0 = no limit. Separate cooldown per state (CRITICAL, DOWN, etc.).") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                NotifRow("Re-sound for same problem on every poll", settings.repeatSameProblemSound) {
+                    onUpdate(settings.copy(repeatSameProblemSound = it))
+                }
+
+                Spacer(Modifier.height(8.dp))
+                NotifSubheader("Notification channel sounds")
+                Text(
+                    "After channels are created, sound and importance can only be changed in Android Settings. " +
+                            "Tap a button below to open the channel settings.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    Spacer(Modifier.height(4.dp))
+                    val channelButtons = listOf(
+                        "Host DOWN" to NotificationHelper.CHANNEL_HOST_DOWN,
+                        "Host UNREACHABLE" to NotificationHelper.CHANNEL_HOST_UNREACHABLE,
+                        "Service CRITICAL" to NotificationHelper.CHANNEL_SERVICE_CRITICAL,
+                        "Service WARNING" to NotificationHelper.CHANNEL_SERVICE_WARNING,
+                        "Service UNKNOWN" to NotificationHelper.CHANNEL_SERVICE_UNKNOWN,
+                        "Connection failure" to NotificationHelper.CHANNEL_FETCH_FAIL,
+                    )
+                    channelButtons.forEach { (label, channelId) ->
+                        OutlinedButton(
+                            onClick = {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                        putExtra(Settings.EXTRA_CHANNEL_ID, channelId)
+                                    }
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        ) { Text("$label — manage sound") }
+                    }
+                }
             }
         }
     }
