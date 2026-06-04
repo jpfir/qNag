@@ -74,6 +74,8 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 filterSettings = parseFilterSettings(root.get("filterSettings")),
                 notificationSettings = parseNotificationSettings(root.get("notificationSettings")),
                 commandSettings = parseCommandSettings(root.get("commandSettings")),
+                selectedDashboardScope = root.get("selectedDashboardScope")
+                    ?.takeIf { !it.isJsonNull }?.asString ?: "ALL",
             )
         } catch (e: Exception) {
             AppSettings()

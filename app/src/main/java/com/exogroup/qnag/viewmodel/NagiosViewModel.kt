@@ -122,46 +122,86 @@ class NagiosViewModel : ViewModel() {
         }
     }
 
+    // ── Command deduplication ─────────────────────────────────────────────────
+    //
+    // Prevents the same ACK or recheck from being submitted multiple times within
+    // COMMAND_COOLDOWN_MS, whether from a rapid double-tap, a swipe that fires
+    // confirmValueChange multiple times, or a bulk action with duplicate entries.
+    // Key: "kindinstanceIduniqueId"  (U+001F separates fields to prevent collisions)
+
+    private val recentCommands = HashMap<String, Long>()
+
+    private fun commandKey(kind: String, instanceId: String, problem: NagiosProblem): String =
+        "$kind$instanceId${problem.uniqueId}"
+
+    private fun isCommandRecent(kind: String, instanceId: String, problem: NagiosProblem): Boolean {
+        val ts = recentCommands[commandKey(kind, instanceId, problem)] ?: return false
+        return (System.currentTimeMillis() - ts) < COMMAND_COOLDOWN_MS
+    }
+
+    private fun recordCommands(kind: String, instanceId: String, problems: List<NagiosProblem>) {
+        val now = System.currentTimeMillis()
+        problems.forEach { recentCommands[commandKey(kind, instanceId, it)] = now }
+    }
+
+    private fun removeCommandRecords(kind: String, instanceId: String, problems: List<NagiosProblem>) {
+        problems.forEach { recentCommands.remove(commandKey(kind, instanceId, it)) }
+    }
+
+    private fun cleanupRecentCommands() {
+        val cutoff = System.currentTimeMillis() - COMMAND_COOLDOWN_MS
+        recentCommands.entries.removeIf { (_, ts) -> ts < cutoff }
+    }
+
     // ── ACK ───────────────────────────────────────────────────────────────────
 
-    /** Single-instance ACK (single-instance mode). */
+    /** Single-instance ACK — de-duplicated by uniqueId and 5 s cooldown. */
     fun acknowledgeProblems(
         instance: NagiosInstance,
         problems: List<NagiosProblem>,
         settings: CommandSettings,
     ) {
         if (problems.isEmpty()) return
+        cleanupRecentCommands()
+        val fresh = problems.distinctBy { it.uniqueId }
+            .filter { !isCommandRecent("ack", instance.id, it) }
+        if (fresh.isEmpty()) {
+            commandState = CommandState.Success("ACK already submitted")
+            return
+        }
+        recordCommands("ack", instance.id, fresh)
         commandState = CommandState.Loading
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) { api.acknowledgeProblems(instance, problems, settings) }
+                withContext(Dispatchers.IO) { api.acknowledgeProblems(instance, fresh, settings) }
                 val now = System.currentTimeMillis()
-                problems.forEach { localAcknowledgedMap[localAckKey(instance.id, it)] = now }
-                commandState = CommandState.Success(ackMsg(problems.size))
+                fresh.forEach { localAcknowledgedMap[localAckKey(instance.id, it)] = now }
+                commandState = CommandState.Success(ackMsg(fresh.size))
                 refreshAfterCommand()
             } catch (e: Exception) {
+                removeCommandRecords("ack", instance.id, fresh)  // allow immediate retry after error
                 commandState = CommandState.Error(e.message ?: "ACK failed")
             }
         }
     }
 
-    /** ALL-mode ACK: routes each problem to its correct instance via problem.instanceId. */
+    /** ALL-mode ACK — de-duplicated by instanceId+uniqueId; routes each problem to its instance. */
     fun acknowledgeProblems(
         allInstances: List<NagiosInstance>,
         problems: List<NagiosProblem>,
         settings: CommandSettings,
     ) {
         if (problems.isEmpty()) return
-        val instanceMap = allInstances.associateBy { it.id }
-        val grouped = problems.groupBy { it.instanceId }
-
-        // Shortcut: single instance → reuse existing overload
-        if (grouped.size == 1) {
-            val (instanceId, group) = grouped.entries.first()
-            val instance = instanceMap[instanceId]
-            if (instance != null) { acknowledgeProblems(instance, group, settings); return }
+        cleanupRecentCommands()
+        val fresh = problems.distinctBy { it.instanceId + "" + it.uniqueId }
+            .filter { !isCommandRecent("ack", it.instanceId, it) }
+        if (fresh.isEmpty()) {
+            commandState = CommandState.Success("ACK already submitted")
+            return
         }
-
+        val instanceMap = allInstances.associateBy { it.id }
+        val grouped = fresh.groupBy { it.instanceId }
+        grouped.forEach { (id, group) -> if (instanceMap.containsKey(id)) recordCommands("ack", id, group) }
         commandState = CommandState.Loading
         viewModelScope.launch {
             try {
@@ -172,10 +212,11 @@ class NagiosViewModel : ViewModel() {
                     }
                 }
                 val now = System.currentTimeMillis()
-                problems.forEach { localAcknowledgedMap[localAckKey(it.instanceId, it)] = now }
-                commandState = CommandState.Success(ackMsg(problems.size))
+                fresh.forEach { localAcknowledgedMap[localAckKey(it.instanceId, it)] = now }
+                commandState = CommandState.Success(ackMsg(fresh.size))
                 refreshAfterCommand()
             } catch (e: Exception) {
+                grouped.forEach { (id, group) -> removeCommandRecords("ack", id, group) }
                 commandState = CommandState.Error(e.message ?: "ACK failed")
             }
         }
@@ -183,36 +224,47 @@ class NagiosViewModel : ViewModel() {
 
     // ── Recheck ───────────────────────────────────────────────────────────────
 
+    /** Single-instance recheck — de-duplicated by uniqueId and 5 s cooldown. */
     fun recheckProblems(instance: NagiosInstance, problems: List<NagiosProblem>, settings: CommandSettings) {
         if (problems.isEmpty()) return
+        cleanupRecentCommands()
+        val fresh = problems.distinctBy { it.uniqueId }
+            .filter { !isCommandRecent("recheck", instance.id, it) }
+        if (fresh.isEmpty()) {
+            commandState = CommandState.Success("Recheck already submitted")
+            return
+        }
+        recordCommands("recheck", instance.id, fresh)
         commandState = CommandState.Loading
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) { api.recheckProblems(instance, problems, settings) }
-                commandState = CommandState.Success(recheckMsg(problems.size))
+                withContext(Dispatchers.IO) { api.recheckProblems(instance, fresh, settings) }
+                commandState = CommandState.Success(recheckMsg(fresh.size))
                 refreshAfterCommand()
             } catch (e: Exception) {
+                removeCommandRecords("recheck", instance.id, fresh)
                 commandState = CommandState.Error(e.message ?: "Recheck failed")
             }
         }
     }
 
-    /** ALL-mode recheck: routes each problem to its correct instance via problem.instanceId. */
+    /** ALL-mode recheck — de-duplicated by instanceId+uniqueId; routes each problem to its instance. */
     fun recheckProblems(
         allInstances: List<NagiosInstance>,
         problems: List<NagiosProblem>,
         settings: CommandSettings,
     ) {
         if (problems.isEmpty()) return
-        val instanceMap = allInstances.associateBy { it.id }
-        val grouped = problems.groupBy { it.instanceId }
-
-        if (grouped.size == 1) {
-            val (instanceId, group) = grouped.entries.first()
-            val instance = instanceMap[instanceId]
-            if (instance != null) { recheckProblems(instance, group, settings); return }
+        cleanupRecentCommands()
+        val fresh = problems.distinctBy { it.instanceId + "" + it.uniqueId }
+            .filter { !isCommandRecent("recheck", it.instanceId, it) }
+        if (fresh.isEmpty()) {
+            commandState = CommandState.Success("Recheck already submitted")
+            return
         }
-
+        val instanceMap = allInstances.associateBy { it.id }
+        val grouped = fresh.groupBy { it.instanceId }
+        grouped.forEach { (id, group) -> if (instanceMap.containsKey(id)) recordCommands("recheck", id, group) }
         commandState = CommandState.Loading
         viewModelScope.launch {
             try {
@@ -222,9 +274,10 @@ class NagiosViewModel : ViewModel() {
                         api.recheckProblems(instance, group, settings)
                     }
                 }
-                commandState = CommandState.Success(recheckMsg(problems.size))
+                commandState = CommandState.Success(recheckMsg(fresh.size))
                 refreshAfterCommand()
             } catch (e: Exception) {
+                grouped.forEach { (id, group) -> removeCommandRecords("recheck", id, group) }
                 commandState = CommandState.Error(e.message ?: "Recheck failed")
             }
         }
@@ -301,5 +354,7 @@ class NagiosViewModel : ViewModel() {
 
     companion object {
         private const val LOCAL_ACK_TTL_MS = 5 * 60 * 1_000L
+        // Same command/problem pair cannot be submitted again within this window.
+        private const val COMMAND_COOLDOWN_MS = 5_000L
     }
 }

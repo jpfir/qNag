@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.edit
 import com.exogroup.qnag.MainActivity
 import com.exogroup.qnag.data.NagiosApi
@@ -33,6 +34,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
+import android.annotation.SuppressLint
 
 /**
  * Optional foreground service for users who want more reliable background monitoring.
@@ -69,27 +71,60 @@ class NagiosMonitoringService : Service() {
         val store = SecureInstanceStore(applicationContext)
         val settings = store.getAppSettings()
         val instances = store.getInstances()
+        val cmdSettings = settings.commandSettings
         val notifEnabled = settings.notificationSettings.notificationsEnabled
         val hasTargets = instances.any { it.enabled && it.notificationsEnabled }
+        val debug = cmdSettings.debugCommandSubmission
 
-        // Stop immediately if there is nothing to monitor — avoids an empty foreground service.
-        if (!notifEnabled || !hasTargets) {
+        if (debug) android.util.Log.d("qNag",
+            "[service] onStartCommand: keepMonitoringActive=${cmdSettings.keepMonitoringActive} " +
+            "notifEnabled=$notifEnabled hasTargets=$hasTargets " +
+            "interval=${cmdSettings.foregroundPollingIntervalSeconds.coerceAtLeast(30)}s")
+
+        if (!cmdSettings.keepMonitoringActive) {
+            if (debug) android.util.Log.d("qNag", "[service] stopping: keepMonitoringActive=false")
             stopSelf()
             return START_NOT_STICKY
         }
 
-        if (pollingJob?.isActive != true) {
-            pollingJob = serviceScope.launch { pollingLoop() }
+        if (!notifEnabled || !hasTargets) {
+            if (debug) android.util.Log.d("qNag", "[service] stopping: notifEnabled=$notifEnabled hasTargets=$hasTargets")
+            stopSelf()
+            return START_NOT_STICKY
         }
+
+        // Foreground service is active — ensure WorkManager is not running concurrently
+        BackgroundPollingScheduler.cancel(applicationContext)
+
+        // Always cancel + restart the polling job.  This acts as a reload: interval changes,
+        // instance list changes, and repeated start() calls all take effect immediately without
+        // requiring a stop/start sequence from outside.
+        pollingJob?.cancel()
+        pollingJob = serviceScope.launch { pollingLoop() }
+
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         serviceScope.cancel()
-        // Reschedule WorkManager so background polling resumes whenever this service stops,
-        // whether stopped by the user, the OS, or onTimeout.
         val store = SecureInstanceStore(applicationContext)
-        BackgroundPollingScheduler.scheduleOrCancel(applicationContext, store.getAppSettings(), store.getInstances())
+        val settings = store.getAppSettings()
+        val debug = settings.commandSettings.debugCommandSubmission
+        if (debug) android.util.Log.d("qNag",
+            "[service] destroyed: keepMonitoringActive=${settings.commandSettings.keepMonitoringActive}")
+
+        if (!settings.commandSettings.keepMonitoringActive) {
+            // Foreground monitoring was disabled by the user → schedule WorkManager as fallback
+            if (debug) android.util.Log.d("qNag", "[service] scheduling WorkManager as fallback")
+            BackgroundPollingScheduler.scheduleOrCancel(applicationContext, settings, store.getInstances())
+        } else {
+            // keepMonitoringActive is still true but the OS killed the service.
+            // Do NOT start WorkManager — the user intends foreground monitoring.
+            // WorkManager is already cancelled (done in onStartCommand).
+            // TODO: boot receiver to restart the service after OS kill under foreground mode
+            if (debug) android.util.Log.d("qNag", "[service] not scheduling WorkManager (keepMonitoringActive=true after kill)")
+            BackgroundPollingScheduler.cancel(applicationContext)
+        }
         super.onDestroy()
     }
 
@@ -124,9 +159,20 @@ class NagiosMonitoringService : Service() {
 
             val targets = instances.filter { it.enabled && it.notificationsEnabled }
             if (targets.isEmpty()) {
+                if (cmdSettings.debugCommandSubmission)
+                    android.util.Log.d("qNag", "[service] no eligible targets, stopping")
                 stopSelf()
                 return
             }
+
+            val effectiveIntervalS = cmdSettings.foregroundPollingIntervalSeconds.coerceAtLeast(30)
+            // Update notification to show real instance count and interval
+            updateForegroundNotification(
+                "Checking ${targets.size} instance${if (targets.size != 1) "s" else ""} every ${effectiveIntervalS}s"
+            )
+
+            if (cmdSettings.debugCommandSubmission)
+                android.util.Log.d("qNag", "[service] poll starting: targets=${targets.size} interval=${effectiveIntervalS}s")
 
             var fingerprints = loadFingerprints()
             var failedIds = loadFailedInstances()
@@ -172,6 +218,9 @@ class NagiosMonitoringService : Service() {
             saveFingerprints(fingerprints)
             saveFailedInstances(failedIds)
 
+            if (cmdSettings.debugCommandSubmission)
+                android.util.Log.d("qNag", "[service] poll finished, next delay ${effectiveIntervalS}s")
+
             delay(intervalMs.milliseconds)
         }
     }
@@ -203,7 +252,9 @@ class NagiosMonitoringService : Service() {
 
     // ── Notification helpers ──────────────────────────────────────────────────
 
-    private fun buildPersistentNotification(): Notification {
+    private fun buildPersistentNotification(
+        contentText: String = "Starting…",
+    ): Notification {
         val tapIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java).apply {
@@ -214,11 +265,24 @@ class NagiosMonitoringService : Service() {
         return NotificationCompat.Builder(this, NotificationHelper.CHANNEL_MONITORING)
             .setSmallIcon(android.R.drawable.ic_menu_recent_history)
             .setContentTitle("qNag monitoring active")
-            .setContentText("Polling Nagios instances in the foreground")
+            .setContentText(contentText)
             .setContentIntent(tapIntent)
             .setOngoing(true)
             .setSilent(true)
             .build()
+    }
+
+    /** Update the persistent foreground notification with new text (e.g. real interval). */
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun updateForegroundNotification(contentText: String) {
+        try {
+            NotificationManagerCompat.from(applicationContext)
+                .notify(
+                    NotificationHelper.MONITORING_SERVICE_NOTIF_ID,
+                    buildPersistentNotification(contentText)
+                )
+        } catch (_: Exception) {
+        }
     }
 
     private fun sanitizeError(msg: String?): String =

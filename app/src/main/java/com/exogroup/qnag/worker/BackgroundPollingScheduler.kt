@@ -26,6 +26,11 @@ object BackgroundPollingScheduler {
     private const val MIN_INTERVAL_MINUTES = 15L
 
     fun scheduleOrCancel(context: Context, settings: AppSettings, instances: List<NagiosInstance>) {
+        // Never run WorkManager alongside an active foreground service — they would double-notify.
+        if (settings.commandSettings.keepMonitoringActive) {
+            cancel(context)
+            return
+        }
         val hasEligibleInstance = instances.any { it.enabled && it.notificationsEnabled }
         if (settings.notificationSettings.notificationsEnabled && hasEligibleInstance) {
             schedule(context, settings.notificationSettings.refreshIntervalMinutes)

@@ -16,6 +16,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import com.exogroup.qnag.data.AppSettings
 import com.exogroup.qnag.data.NagiosInstance
 import com.exogroup.qnag.data.SecureInstanceStore
 import com.exogroup.qnag.notifications.NotificationHelper
@@ -61,13 +62,7 @@ class MainActivity : ComponentActivity() {
 
                     // ── Startup scheduling ─────────────────────────────────
                     LaunchedEffect(Unit) {
-                        if (appSettings.commandSettings.keepMonitoringActive) {
-                            // Foreground service is preferred — cancel WorkManager to avoid duplicates
-                            BackgroundPollingScheduler.cancel(this@MainActivity)
-                            NagiosMonitoringService.start(this@MainActivity)
-                        } else {
-                            BackgroundPollingScheduler.scheduleOrCancel(this@MainActivity, appSettings, instances)
-                        }
+                        applyPollingMode(appSettings, instances)
                         maybeRequestNotificationPermission(appSettings.notificationSettings.notificationsEnabled)
                     }
 
@@ -79,13 +74,11 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // Helper: update instance list and reschedule workers
+                    // Helper: update instance list and apply the appropriate polling mode
                     fun onInstancesUpdated(newInstances: List<NagiosInstance>) {
                         store.saveInstances(newInstances)
                         instances = newInstances
-                        if (!appSettings.commandSettings.keepMonitoringActive) {
-                            BackgroundPollingScheduler.scheduleOrCancel(this@MainActivity, appSettings, newInstances)
-                        }
+                        applyPollingMode(appSettings, newInstances)
                         val enabled = newInstances.filter { it.enabled }
                         val current = screen
                         when {
@@ -105,9 +98,7 @@ class MainActivity : ComponentActivity() {
                                 onSave = { newInstance ->
                                     store.addInstance(newInstance)
                                     instances = store.getInstances()
-                                    if (!appSettings.commandSettings.keepMonitoringActive) {
-                                        BackgroundPollingScheduler.scheduleOrCancel(this@MainActivity, appSettings, instances)
-                                    }
+                                    applyPollingMode(appSettings, instances)
                                     screen = AppScreen.Dashboard(newInstance)
                                 },
                                 onCancel = if (instances.any { it.enabled }) {
@@ -126,6 +117,12 @@ class MainActivity : ComponentActivity() {
                                 onSwitchInstance = { screen = AppScreen.Dashboard(it) },
                                 onAddNewInstance = { screen = AppScreen.AddInstance },
                                 onOpenSettings = { screen = AppScreen.Settings(s.instance) },
+                                initialDashboardScope = appSettings.selectedDashboardScope,
+                                onScopeChanged = { newScope ->
+                                    val updated = appSettings.copy(selectedDashboardScope = newScope)
+                                    store.saveAppSettings(updated)
+                                    appSettings = updated
+                                },
                             )
                         }
 
@@ -146,28 +143,14 @@ class MainActivity : ComponentActivity() {
                                     val updated = appSettings.copy(notificationSettings = newNotif)
                                     store.saveAppSettings(updated)
                                     appSettings = updated
-                                    if (!appSettings.commandSettings.keepMonitoringActive) {
-                                        BackgroundPollingScheduler.scheduleOrCancel(this@MainActivity, updated, instances)
-                                    }
+                                    applyPollingMode(updated, instances)
                                     maybeRequestNotificationPermission(newNotif.notificationsEnabled)
                                 },
                                 onUpdateCommandSettings = { newCmd ->
-                                    val oldCmd = appSettings.commandSettings
                                     val updated = appSettings.copy(commandSettings = newCmd)
                                     store.saveAppSettings(updated)
                                     appSettings = updated
-
-                                    // Manage foreground service vs WorkManager
-                                    when {
-                                        newCmd.keepMonitoringActive && !oldCmd.keepMonitoringActive -> {
-                                            BackgroundPollingScheduler.cancel(this@MainActivity)
-                                            NagiosMonitoringService.start(this@MainActivity)
-                                        }
-                                        !newCmd.keepMonitoringActive && oldCmd.keepMonitoringActive -> {
-                                            NagiosMonitoringService.stop(this@MainActivity)
-                                            BackgroundPollingScheduler.scheduleOrCancel(this@MainActivity, updated, instances)
-                                        }
-                                    }
+                                    applyPollingMode(updated, instances)
                                 },
                                 onBack = {
                                     val enabled = instances.filter { it.enabled }
@@ -181,6 +164,37 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * Single entry-point for all foreground-service / WorkManager scheduling decisions.
+     *
+     * Rules:
+     *  - eligible = notificationsEnabled AND at least one enabled+notificationsEnabled instance
+     *  - keepMonitoringActive && eligible  → cancel WorkManager, start/reload foreground service
+     *  - keepMonitoringActive && !eligible → stop foreground service, cancel WorkManager
+     *  - !keepMonitoringActive             → stop foreground service, scheduleOrCancel WorkManager
+     */
+    private fun applyPollingMode(settings: AppSettings, instances: List<NagiosInstance>) {
+        val eligible = settings.notificationSettings.notificationsEnabled &&
+                instances.any { it.enabled && it.notificationsEnabled }
+        val debug = settings.commandSettings.debugCommandSubmission
+
+        if (settings.commandSettings.keepMonitoringActive && eligible) {
+            if (debug) android.util.Log.d("qNag", "[main] applyPollingMode: foreground active+eligible, cancelling WorkManager")
+            BackgroundPollingScheduler.cancel(this)
+            NagiosMonitoringService.start(this)  // start() is idempotent — service reloads settings
+        } else {
+            NagiosMonitoringService.stop(this)
+            if (!settings.commandSettings.keepMonitoringActive) {
+                if (debug) android.util.Log.d("qNag", "[main] applyPollingMode: foreground off, scheduling WorkManager")
+                BackgroundPollingScheduler.scheduleOrCancel(this, settings, instances)
+            } else {
+                // keepMonitoringActive=true but not eligible — cancel both
+                if (debug) android.util.Log.d("qNag", "[main] applyPollingMode: foreground active but not eligible, cancelling WorkManager")
+                BackgroundPollingScheduler.cancel(this)
             }
         }
     }

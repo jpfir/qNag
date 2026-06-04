@@ -53,13 +53,22 @@ fun DashboardScreen(
     onSwitchInstance: (NagiosInstance) -> Unit,
     onAddNewInstance: () -> Unit,
     onOpenSettings: () -> Unit,
+    // Persisted dashboard scope: "ALL" or "INSTANCE:<uuid>".  Restored from AppSettings on startup.
+    initialDashboardScope: String = "ALL",
+    // Called whenever the user changes the scope so the caller can persist the new value.
+    onScopeChanged: (String) -> Unit = {},
     nagiosViewModel: NagiosViewModel = viewModel(),
 ) {
     val enabledInstances = remember(allInstances) { allInstances.filter { it.enabled } }
 
-    // Internal selection state — resets when `instance` changes (MainActivity navigation)
+    // Restore selection from the persisted scope when the screen is first shown or when
+    // the user navigates to a different instance (instance.id changes).
+    // remember(instance.id) re-runs when instance changes but NOT when only initialDashboardScope
+    // changes mid-session (that would reset an in-flight selection the user just made).
     var selectedInstance by remember(instance.id) {
-        mutableStateOf<InstanceSelection>(InstanceSelection.Single(instance))
+        mutableStateOf<InstanceSelection>(
+            resolveDashboardScope(initialDashboardScope, instance, enabledInstances)
+        )
     }
 
     // Trigger an initial (or re-selection) fetch whenever selection or instance list changes
@@ -72,8 +81,18 @@ fun DashboardScreen(
     }
 
     // Auto-refresh loop
-    val refreshMs = remember(notificationSettings.refreshIntervalMinutes) {
-        notificationSettings.refreshIntervalMinutes.coerceAtLeast(15) * 60_000L
+    // When foreground monitoring is on, match the foreground service interval so the dashboard
+    // and service stay in sync.  Otherwise use the WorkManager-style 15-minute minimum.
+    val refreshMs = remember(
+        commandSettings.keepMonitoringActive,
+        commandSettings.foregroundPollingIntervalSeconds,
+        notificationSettings.refreshIntervalMinutes,
+    ) {
+        if (commandSettings.keepMonitoringActive) {
+            commandSettings.foregroundPollingIntervalSeconds.coerceAtLeast(30) * 1_000L
+        } else {
+            notificationSettings.refreshIntervalMinutes.coerceAtLeast(15) * 60_000L
+        }
     }
     LaunchedEffect(selectedInstance, enabledInstanceIds, refreshMs) {
         while (true) {
@@ -162,12 +181,22 @@ fun DashboardScreen(
                             enabledInstances = enabledInstances,
                             onSelect = { sel ->
                                 when (sel) {
-                                    // Switching to a different single instance also syncs MainActivity
-                                    // so that "Open Settings" shows the correct fromInstance.
-                                    is InstanceSelection.Single ->
-                                        if (sel.instance.id != instance.id) onSwitchInstance(sel.instance)
-                                        else selectedInstance = sel
-                                    else -> selectedInstance = sel
+                                    is InstanceSelection.All -> {
+                                        selectedInstance = sel
+                                        onScopeChanged("ALL")
+                                    }
+                                    is InstanceSelection.Single -> {
+                                        val scopeStr = "INSTANCE:${sel.instance.id}"
+                                        if (sel.instance.id != instance.id) {
+                                            // Switching to a different instance: persist scope then
+                                            // navigate so MainActivity's fromInstance stays in sync.
+                                            onScopeChanged(scopeStr)
+                                            onSwitchInstance(sel.instance)
+                                        } else {
+                                            selectedInstance = sel
+                                            onScopeChanged(scopeStr)
+                                        }
+                                    }
                                 }
                             },
                         )
@@ -432,6 +461,41 @@ private fun ErrorBanner(message: String, onRetry: () -> Unit) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Converts a persisted scope string to an [InstanceSelection].
+ *
+ * Fallback rules (applied when the requested scope is unavailable):
+ *  - "ALL" with exactly 1 enabled instance → Single(that instance)
+ *  - "INSTANCE:id" where the instance is missing/disabled:
+ *      · multiple enabled instances → All
+ *      · exactly 1 → Single(that instance)
+ *  - Unrecognised string → Single(fallbackInstance)
+ */
+private fun resolveDashboardScope(
+    scope: String,
+    fallbackInstance: NagiosInstance,
+    enabledInstances: List<NagiosInstance>,
+): InstanceSelection {
+    val moreThanOne = enabledInstances.size > 1
+    return when {
+        scope == "ALL" ->
+            if (moreThanOne) InstanceSelection.All
+            else InstanceSelection.Single(enabledInstances.firstOrNull() ?: fallbackInstance)
+
+        scope.startsWith("INSTANCE:") -> {
+            val id = scope.removePrefix("INSTANCE:")
+            val inst = enabledInstances.find { it.id == id }
+            when {
+                inst != null -> InstanceSelection.Single(inst)
+                moreThanOne -> InstanceSelection.All
+                else -> InstanceSelection.Single(enabledInstances.firstOrNull() ?: fallbackInstance)
+            }
+        }
+
+        else -> InstanceSelection.Single(fallbackInstance)
+    }
+}
 
 private fun applyFiltersAndLocalAck(
     problems: List<NagiosProblem>,

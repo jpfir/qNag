@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -39,9 +40,18 @@ fun ProblemCard(
     onRecheck: () -> Unit,
 ) {
     var isExpanded by remember { mutableStateOf(false) }
+    // One-shot swipe lock: prevents the same gesture from firing onAck/onRecheck multiple times.
+    // confirmValueChange can be called repeatedly during a single gesture, so we gate on this flag
+    // and reset it after a short delay (long enough for the gesture to fully settle).
+    var swipeLocked by remember { mutableStateOf(false) }
+    LaunchedEffect(swipeLocked) {
+        if (swipeLocked) {
+            delay(1_000L)
+            swipeLocked = false
+        }
+    }
 
     val (rawContainerColor, contentColor) = problemColors(problem)
-    // Dim acknowledged cards to de-emphasize them without hiding them
     val containerColor = when {
         isSelected -> rawContainerColor.copy(alpha = 0.5f)
         isAcknowledged || isPendingAck -> rawContainerColor.copy(alpha = 0.65f)
@@ -50,9 +60,10 @@ fun ProblemCard(
 
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
+            if (swipeLocked) return@rememberSwipeToDismissBoxState false
             when (value) {
-                SwipeToDismissBoxValue.EndToStart -> { onAck(); false }
-                SwipeToDismissBoxValue.StartToEnd -> { onRecheck(); false }
+                SwipeToDismissBoxValue.EndToStart -> { swipeLocked = true; onAck(); false }
+                SwipeToDismissBoxValue.StartToEnd -> { swipeLocked = true; onRecheck(); false }
                 else -> false
             }
         }
