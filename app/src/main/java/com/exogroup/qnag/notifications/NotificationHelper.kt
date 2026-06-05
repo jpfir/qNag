@@ -21,6 +21,69 @@ import com.exogroup.qnag.data.notificationId
 import com.exogroup.qnag.data.notificationStatusLabel
 import java.util.concurrent.ConcurrentHashMap
 
+// ── Visual state / notification accent color ──────────────────────────────────
+
+/**
+ * Represents the worst current qNag alert state, used to derive the notification accent color.
+ *
+ * Priority (high → low): CRITICAL > FETCH_FAILURE > WARNING > UNKNOWN > OK
+ *
+ * The accent is applied via [NotificationCompat.Builder.setColor] and shows as a colored
+ * circle/accent in the expanded notification row on most Android launchers.
+ * The small icon itself remains monochrome (Android requirement for status bar icons).
+ */
+enum class NotificationVisualState {
+    OK,            // all green / no problems
+    WARNING,       // service warnings only
+    UNKNOWN,       // service unknowns only (no warnings or worse)
+    CRITICAL,      // any critical service, host down, or host unreachable
+    FETCH_FAILURE, // instance(s) unreachable (lower priority than CRITICAL)
+}
+
+/** Derive visual state from pre-computed problem counts. */
+fun deriveVisualState(
+    hostDown: Int, hostUnr: Int, svcCrit: Int, svcWarn: Int, svcUnk: Int,
+    failedCount: Int,
+): NotificationVisualState = when {
+    hostDown > 0 || svcCrit > 0 || hostUnr > 0 -> NotificationVisualState.CRITICAL
+    failedCount > 0                              -> NotificationVisualState.FETCH_FAILURE
+    svcWarn  > 0                                 -> NotificationVisualState.WARNING
+    svcUnk   > 0                                 -> NotificationVisualState.UNKNOWN
+    else                                         -> NotificationVisualState.OK
+}
+
+/** Derive visual state directly from a [ProblemToNotify] list (for the foreground service). */
+fun deriveVisualStateFromProblems(
+    allProblems: List<ProblemToNotify>,
+    failedCount: Int,
+): NotificationVisualState {
+    val hostDown = allProblems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_DOWN }
+    val hostUnr  = allProblems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_UNREACHABLE }
+    val svcCrit  = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_CRITICAL }
+    val svcWarn  = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_WARNING }
+    val svcUnk   = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_UNKNOWN }
+    return deriveVisualState(hostDown, hostUnr, svcCrit, svcWarn, svcUnk, failedCount)
+}
+
+/**
+ * ARGB color int for use with [NotificationCompat.Builder.setColor].
+ *
+ *  OK            → #2E7D32  green
+ *  WARNING       → #F9A825  amber
+ *  CRITICAL      → #C62828  red
+ *  UNKNOWN       → #6A1B9A  purple
+ *  FETCH_FAILURE → #EF6C00  orange
+ */
+fun visualStateColor(state: NotificationVisualState): Int = when (state) {
+    NotificationVisualState.OK            -> 0xFF2E7D32.toInt()
+    NotificationVisualState.WARNING       -> 0xFFF9A825.toInt()
+    NotificationVisualState.CRITICAL      -> 0xFFC62828.toInt()
+    NotificationVisualState.UNKNOWN       -> 0xFF6A1B9A.toInt()
+    NotificationVisualState.FETCH_FAILURE -> 0xFFEF6C00.toInt()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 object NotificationHelper {
 
     // ── Channel IDs ───────────────────────────────────────────────────────────
@@ -255,8 +318,10 @@ object NotificationHelper {
             allowed
         }
 
+        val visualState = deriveVisualState(hostDown, hostUnr, svcCrit, svcWarn, svcUnk, failedInstances.size)
         val notif = NotificationCompat.Builder(context, CHANNEL_ALERT_SUMMARY)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setColor(visualStateColor(visualState))
             .setContentTitle(title)
             .setContentText(bodyLines.firstOrNull() ?: "")
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
@@ -288,6 +353,7 @@ object NotificationHelper {
         if (!hasPermission(context)) return
         val notif = NotificationCompat.Builder(context, CHANNEL_STALE)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setColor(visualStateColor(NotificationVisualState.FETCH_FAILURE)) // orange = stale/unreachable
             .setContentTitle("qNag: monitoring stale")
             .setContentText(message)
             .setContentIntent(mainActivityIntent(context))

@@ -25,6 +25,8 @@ import com.exogroup.qnag.data.instanceFingerprintPrefix
 import com.exogroup.qnag.data.problemFingerprint
 import com.exogroup.qnag.data.shouldNotify
 import com.exogroup.qnag.notifications.NotificationHelper
+import com.exogroup.qnag.notifications.deriveVisualStateFromProblems
+import com.exogroup.qnag.notifications.visualStateColor
 import com.exogroup.qnag.notifications.ProblemToNotify
 import com.exogroup.qnag.worker.BackgroundPollingScheduler
 import com.google.gson.Gson
@@ -260,7 +262,11 @@ class NagiosMonitoringService : Service() {
                     val bigText = if (bodyLines.isNotEmpty())
                         bodyLines.joinToString("\n") + "\n$subtitle"
                     else subtitle
-                    updateForegroundNotification(summaryTitle, contentText, bigText)
+                    // Derive accent color from the current worst alert state
+                    val notifColor = visualStateColor(
+                        deriveVisualStateFromProblems(allCurrentProblems, failedInstanceNames.size)
+                    )
+                    updateForegroundNotification(summaryTitle, contentText, bigText, notifColor)
 
                     // Unified in-app sound decision — same logic used by foreground service and worker
                     AlertSoundController.evaluateAndPlay(
@@ -334,6 +340,7 @@ class NagiosMonitoringService : Service() {
         title: String = "qNag monitoring active",
         contentText: String = "Starting…",
         bigText: String? = null,
+        color: Int = 0,
     ): Notification {
         val tapIntent = PendingIntent.getActivity(
             this, 0,
@@ -348,6 +355,8 @@ class NagiosMonitoringService : Service() {
             .setContentText(contentText)
             .apply {
                 if (bigText != null) setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
+                // color == 0 means "use system default" (e.g. before first poll completes)
+                if (color != 0) setColor(color)
             }
             .setContentIntent(tapIntent)
             .setOngoing(true)
@@ -356,22 +365,24 @@ class NagiosMonitoringService : Service() {
     }
 
     /**
-     * Update the persistent foreground notification.
+     * Update the persistent foreground notification with an optional accent color.
      *
-     * In SUMMARY_ONLY mode the title becomes the alert-summary title ("qNag: 3 critical, …"),
-     * the contentText shows instance count + interval, and bigText shows per-instance lines.
+     * In SUMMARY_ONLY mode the title is the alert-summary title ("qNag: 3 critical, …"),
+     * contentText shows instance count + interval, bigText shows per-instance lines, and
+     * color reflects the current worst alert state (green/amber/red/purple/orange).
      */
     @android.annotation.SuppressLint("MissingPermission")
     private fun updateForegroundNotification(
         title: String = "qNag monitoring active",
         contentText: String,
         bigText: String? = null,
+        color: Int = 0,
     ) {
         try {
             NotificationManagerCompat.from(applicationContext)
                 .notify(
                     NotificationHelper.MONITORING_SERVICE_NOTIF_ID,
-                    buildPersistentNotification(title, contentText, bigText)
+                    buildPersistentNotification(title, contentText, bigText, color)
                 )
         } catch (_: Exception) {
         }
