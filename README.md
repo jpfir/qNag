@@ -482,5 +482,6 @@ Use it at your own risk. If it wakes you up at 3 AM for the wrong reason, I am s
 
 ## License
 
-TODO: MIT
+GPL-3.0-or-later
+
 
