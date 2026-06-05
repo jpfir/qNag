@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.exogroup.qnag.data.AckSuppressCache
+import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.data.NagiosApi
 import com.exogroup.qnag.data.NotificationMode
 import com.exogroup.qnag.data.SecureInstanceStore
@@ -44,6 +45,9 @@ class NagiosPollingWorker(
         val cmdSettings = settings.commandSettings
 
         if (!notifSettings.notificationsEnabled) return Result.success()
+
+        MonitoringHealth.recordWorkerRun(applicationContext)
+        MonitoringHealth.recordPollStart(applicationContext)
 
         // Evict expired ACK-suppress entries before the poll cycle
         AckSuppressCache.evictExpired(applicationContext)
@@ -88,6 +92,8 @@ class NagiosPollingWorker(
                     }
                 }
 
+                MonitoringHealth.recordPollSuccess(applicationContext)
+
                 // Recovery: clear failure state
                 if (instance.id in failedInstanceIds) {
                     failedInstanceIds = failedInstanceIds - instance.id
@@ -115,6 +121,23 @@ class NagiosPollingWorker(
                 NotificationHelper.notifySummary(applicationContext, toNotify, allCurrentProblems, failedInstanceNames, notifSettings)
             NotificationMode.PER_PROBLEM ->
                 NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
+        }
+
+        MonitoringHealth.recordWorkerSuccess(applicationContext)
+        MonitoringHealth.recordPollFinished(applicationContext)
+
+        // Stale monitoring self-check
+        if (cmdSettings.staleMonitoringAlertEnabled) {
+            val lastSuccess = MonitoringHealth.getSnapshot(applicationContext).lastSuccessfulPollAt
+            if (lastSuccess != null) {
+                val staleMs = cmdSettings.monitoringStaleThresholdMinutes * 60_000L
+                if (System.currentTimeMillis() - lastSuccess > staleMs) {
+                    val minAgo = (System.currentTimeMillis() - lastSuccess) / 60_000L
+                    NotificationHelper.notifyStale(applicationContext, "No successful poll in ${minAgo}m")
+                } else {
+                    NotificationHelper.cancelStale(applicationContext)
+                }
+            }
         }
 
         saveFingerprints(fingerprints)

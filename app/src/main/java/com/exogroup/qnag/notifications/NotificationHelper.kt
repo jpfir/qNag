@@ -32,22 +32,24 @@ object NotificationHelper {
     const val CHANNEL_SERVICE_WARNING = "qnag_service_warning"
     const val CHANNEL_SERVICE_UNKNOWN = "qnag_service_unknown"
     const val CHANNEL_ALERT_SUMMARY = "qnag_alert_summary"   // compact single-summary mode
+    const val CHANNEL_STALE = "qnag_stale"                   // stale-monitoring self-alert
     const val CHANNEL_ALERTS = "qnag_alerts"                 // legacy fallback
 
     const val MONITORING_SERVICE_NOTIF_ID = 9001
     const val ALERT_SUMMARY_NOTIF_ID = 9002
+    const val STALE_NOTIF_ID = 9003
 
     // When ≥ this many new problems of the same state arrive in one poll cycle,
     // collapse them into a single summary notification to prevent a sound storm.
     private const val SUMMARY_THRESHOLD = 3
 
-    // In-memory per-channel last-sound timestamps.  Resets on process restart — intentional;
-    // avoids stale SharedPreferences reads and is good enough for anti-flood.
+    // In-memory per-channel last-sound timestamps — used by notifyBatch() for per-problem mode.
+    // Resets on process restart; that's acceptable for the noisy per-problem mode.
     private val lastSoundTimestampMs = ConcurrentHashMap<String, Long>()
 
-    // Tracks worst severity seen in the last summary poll for sound-change detection.
-    // 0 = all green, 1 = UNKNOWN, 2 = WARNING, 3 = UNREACHABLE, 4 = CRITICAL, 5 = HOST DOWN.
-    private var lastSummaryWorstSeverity = 0
+    // Summary-mode sound state is persisted in SharedPreferences (Goal 3) so it survives
+    // process restarts.  Key: worst severity seen last poll + timestamp of last sound.
+    private const val ALERT_SOUND_PREFS = "qnag_alert_sound_state"
 
     // ── Channel creation ──────────────────────────────────────────────────────
 
@@ -89,7 +91,11 @@ object NotificationHelper {
         )
         mgr.createNotificationChannel(
             channel(CHANNEL_ALERT_SUMMARY, "qNag Alert Summary", NotificationManager.IMPORTANCE_DEFAULT,
-                "Single compact notification summarising all current Nagios problems")
+                "Compact audible summary of current Nagios problems — sounds on new/worse state")
+        )
+        mgr.createNotificationChannel(
+            channel(CHANNEL_STALE, "qNag: Monitoring Stale", NotificationManager.IMPORTANCE_DEFAULT,
+                "Shown when qNag has not successfully polled within the stale threshold")
         )
         mgr.createNotificationChannel(
             channel(CHANNEL_ALERTS, "qNag Alerts (legacy)", NotificationManager.IMPORTANCE_DEFAULT,
@@ -153,21 +159,26 @@ object NotificationHelper {
     }
 
     /**
-     * Cancel the standalone alert-summary notification.
-     * Called when the foreground service starts so only one qNag notification is visible.
+     * Cancel the alert-summary notification and reset persistent sound state.
+     * After a cancel, the next alert will sound again even if severity hasn't increased.
      */
     fun cancelAlertSummary(context: Context) {
         NotificationManagerCompat.from(context).cancel(ALERT_SUMMARY_NOTIF_ID)
-        lastSummaryWorstSeverity = 0
+        saveAlertSoundState(context, 0, false)
     }
 
     // ── Summary notification (SUMMARY_ONLY / GROUPED_DETAILS modes) ──────────
 
     /**
-     * Posts or updates the single compact alert-summary notification.
+     * Posts or updates the single compact alert-summary notification (ALERT_SUMMARY_NOTIF_ID).
+     *
+     * This is SEPARATE from the quiet foreground service notification (MONITORING_SERVICE_NOTIF_ID).
+     * In reliability mode the notification shade shows both:
+     *   • "qNag monitoring active – Checking 2 instances every 30s"  (quiet, ongoing)
+     *   • "qNag: 3 critical, 7 warning – EvoExads: C3·W6; Exo: W1"  (audible on new/worse state)
      *
      * @param newProblems   Problems that are new this poll cycle — drive sound decisions.
-     * @param allProblems   All current problems passing notification filters — drive title/body text.
+     * @param allProblems   All current problems passing notification filters — drive title/body.
      * @param failedInstances Instance names whose fetch failed this cycle.
      */
     @SuppressLint("MissingPermission")
@@ -180,10 +191,9 @@ object NotificationHelper {
     ) {
         if (!hasPermission(context)) return
 
-        // All-clear: cancel the summary notification rather than posting "all green"
+        // All-clear: cancel the summary notification and reset sound state
         if (allProblems.isEmpty() && failedInstances.isEmpty()) {
-            NotificationManagerCompat.from(context).cancel(ALERT_SUMMARY_NOTIF_ID)
-            lastSummaryWorstSeverity = 0
+            cancelAlertSummary(context)
             return
         }
 
@@ -215,7 +225,15 @@ object NotificationHelper {
         }
         val body = bodyLines.joinToString("\n")
 
-        val soundAllowed = shouldPlaySummarySound(newProblems.isNotEmpty(), currentWorst, settings)
+        // Load persisted sound state so restart doesn't reset severity tracking (Goal 3)
+        val (prevSeverity, lastSoundMs) = loadAlertSoundState(context)
+        val soundAllowed = shouldPlaySummarySound(
+            hasNewProblems = newProblems.isNotEmpty(),
+            currentSeverity = currentWorst,
+            settings = settings,
+            prevSeverity = prevSeverity,
+            lastSoundMs = lastSoundMs,
+        )
         val priority = if (hostDown > 0 || svcCrit > 0) NotificationCompat.PRIORITY_HIGH
                        else NotificationCompat.PRIORITY_DEFAULT
 
@@ -231,9 +249,27 @@ object NotificationHelper {
             .build()
 
         NotificationManagerCompat.from(context).notify(ALERT_SUMMARY_NOTIF_ID, notif)
+        saveAlertSoundState(context, currentWorst, soundAllowed)
+    }
 
-        if (soundAllowed) lastSoundTimestampMs["__global__"] = System.currentTimeMillis()
-        lastSummaryWorstSeverity = currentWorst
+    // ── Stale monitoring alert ─────────────────────────────────────────────────
+
+    @SuppressLint("MissingPermission")
+    fun notifyStale(context: Context, message: String) {
+        if (!hasPermission(context)) return
+        val notif = NotificationCompat.Builder(context, CHANNEL_STALE)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("qNag: monitoring stale")
+            .setContentText(message)
+            .setContentIntent(mainActivityIntent(context))
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        NotificationManagerCompat.from(context).notify(STALE_NOTIF_ID, notif)
+    }
+
+    fun cancelStale(context: Context) {
+        NotificationManagerCompat.from(context).cancel(STALE_NOTIF_ID)
     }
 
     private fun buildSummaryTitle(
@@ -259,18 +295,36 @@ object NotificationHelper {
         else         -> 0
     }
 
+    // ── Persistent alert sound state (Goal 3) ────────────────────────────────
+    // Stored in plain SharedPreferences — no secrets, just timestamps and integers.
+
+    private fun loadAlertSoundState(context: Context): Pair<Int, Long> {
+        val p = context.getSharedPreferences(ALERT_SOUND_PREFS, Context.MODE_PRIVATE)
+        return p.getInt("worst_severity", 0) to p.getLong("last_sound_ms", 0L)
+    }
+
+    private fun saveAlertSoundState(context: Context, worstSeverity: Int, soundPlayed: Boolean) {
+        context.getSharedPreferences(ALERT_SOUND_PREFS, Context.MODE_PRIVATE).edit().apply {
+            putInt("worst_severity", worstSeverity)
+            if (soundPlayed) putLong("last_sound_ms", System.currentTimeMillis())
+            apply()
+        }
+    }
+
     private fun shouldPlaySummarySound(
         hasNewProblems: Boolean,
         currentSeverity: Int,
         settings: NotificationSettings,
+        prevSeverity: Int,
+        lastSoundMs: Long,
     ): Boolean {
         if (currentSeverity == 0) return false
         val now = System.currentTimeMillis()
-        val lastSound = lastSoundTimestampMs["__global__"] ?: 0L
         val cooldownMs = settings.globalSoundCooldownSeconds.toLong() * 1000L
-        if (settings.globalSoundCooldownSeconds > 0 && (now - lastSound) < cooldownMs) return false
-        return currentSeverity > lastSummaryWorstSeverity ||
-               (hasNewProblems && lastSummaryWorstSeverity == 0) ||
+        if (settings.globalSoundCooldownSeconds > 0 && (now - lastSoundMs) < cooldownMs) return false
+        // Sound when: severity increased, transition from OK, or repeat setting allows
+        return currentSeverity > prevSeverity ||
+               (hasNewProblems && prevSeverity == 0) ||
                (hasNewProblems && settings.repeatSameProblemSound)
     }
 

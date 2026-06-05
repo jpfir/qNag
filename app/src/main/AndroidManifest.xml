@@ -17,6 +17,8 @@
 
     <!-- Foreground service (optional "Keep monitoring active" feature, user-controlled) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Boot/package-update receiver: schedules WorkManager fallback after reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!--
         Android 14+ requires a specific foreground service type permission.
         dataSync is the closest type for a monitoring/data-fetching service.
@@ -46,13 +48,28 @@
         </activity>
 
         <!--
-            Optional foreground service for "Keep monitoring active".
+            Optional foreground service for "Reliability mode" (keepMonitoringActive).
             foregroundServiceType="dataSync" satisfies the Android 14+ type requirement.
+            START_STICKY: Android will attempt to restart the service if killed.
         -->
         <service
             android:name=".service.NagiosMonitoringService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!--
+            Boot and package-update receiver: schedules WorkManager fallback so qNag
+            does not go completely silent after reboot or app update.
+            Does NOT auto-start the foreground service (that requires explicit user action).
+        -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

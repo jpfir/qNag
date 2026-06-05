@@ -63,4 +63,21 @@ object BackgroundPollingScheduler {
     fun cancel(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
     }
+
+    /**
+     * Schedule WorkManager as fallback, bypassing the keepMonitoringActive guard.
+     *
+     * Used by:
+     *  - [BootReceiver] — after reboot, before the user reopens the app.
+     *  - [NagiosMonitoringService.onDestroy] — when the foreground service is killed by the OS.
+     *
+     * Only schedules if notifications are enabled and at least one eligible instance exists.
+     */
+    fun scheduleFallback(context: Context, settings: AppSettings, instances: List<NagiosInstance>) {
+        val hasEligibleInstance = instances.any { it.enabled && it.notificationsEnabled }
+        if (settings.notificationSettings.notificationsEnabled && hasEligibleInstance) {
+            schedule(context, settings.notificationSettings.refreshIntervalMinutes)
+        }
+        // If not eligible, leave WorkManager as-is (don't cancel existing work)
+    }
 }

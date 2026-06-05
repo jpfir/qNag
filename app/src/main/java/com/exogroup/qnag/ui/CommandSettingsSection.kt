@@ -80,17 +80,17 @@ fun CommandSettingsSection(
         }
 
         Spacer(Modifier.height(4.dp))
-        CmdSubheader("Foreground monitoring")
+        CmdSubheader("Reliability mode")
 
         CmdRow(
-            label = "Keep monitoring active (foreground service)",
+            label = "Enable reliability mode (foreground service)",
             checked = settings.keepMonitoringActive,
             onCheckedChange = { onUpdate(settings.copy(keepMonitoringActive = it)) },
         )
         Text(
-            "Foreground monitoring is more reliable and can poll more often, but Android may still " +
-                    "limit or stop it. On Android 15+, dataSync foreground services have background " +
-                    "runtime limits.",
+            "Keeps qNag actively polling with a foreground service and persistent notification. " +
+                    "This improves reliability for on-call use, but Android or vendor battery policies " +
+                    "may still stop or delay checks. If stopped, WorkManager fallback takes over.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 4.dp),
@@ -102,6 +102,37 @@ fun CommandSettingsSection(
                     currentSeconds = settings.foregroundPollingIntervalSeconds,
                     onSelect = { onUpdate(settings.copy(foregroundPollingIntervalSeconds = it)) },
                 )
+            }
+        }
+
+        Spacer(Modifier.height(4.dp))
+        CmdSubheader("Stale monitoring alert")
+
+        CmdRow("Alert if monitoring goes stale", settings.staleMonitoringAlertEnabled) {
+            onUpdate(settings.copy(staleMonitoringAlertEnabled = it))
+        }
+        Text(
+            "Shows a notification if no poll succeeded within the stale threshold.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        AnimatedVisibility(visible = settings.staleMonitoringAlertEnabled) {
+            Column {
+                // Simple numeric display — threshold is 1-60 min, default 5
+                Text(
+                    "Stale threshold: ${settings.monitoringStaleThresholdMinutes} min",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(2, 5, 10, 15, 30).forEach { minutes ->
+                        FilterChip(
+                            selected = settings.monitoringStaleThresholdMinutes == minutes,
+                            onClick = { onUpdate(settings.copy(monitoringStaleThresholdMinutes = minutes)) },
+                            label = { Text("${minutes}m") },
+                        )
+                    }
+                }
             }
         }
 

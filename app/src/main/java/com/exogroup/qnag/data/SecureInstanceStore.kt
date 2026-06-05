@@ -112,6 +112,8 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                         ?.let { NagiosDateFormat.valueOf(it) }
                 } catch (_: Exception) { null },
                 ackServicesOnHostAck = o.get("ackServicesOnHostAck")?.asBoolean ?: true,
+                monitoringStaleThresholdMinutes = o.get("monitoringStaleThresholdMinutes")?.asInt ?: 5,
+                staleMonitoringAlertEnabled = o.get("staleMonitoringAlertEnabled")?.asBoolean ?: true,
                 debugCommandSubmission = o.get("debugCommandSubmission")?.asBoolean ?: false,
             )
         } catch (_: Exception) { CommandSettings() }

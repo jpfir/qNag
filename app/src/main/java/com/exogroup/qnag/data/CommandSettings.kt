@@ -31,6 +31,11 @@ data class CommandSettings(
     // are alerting because of it.
     val ackServicesOnHostAck: Boolean = true,
 
+    // ── Stale monitoring alert ────────────────────────────────────────────────
+    // If no successful poll completes within this window, post a "monitoring stale" notification.
+    val monitoringStaleThresholdMinutes: Int = 5,
+    val staleMonitoringAlertEnabled: Boolean = true,
+
     // ── Diagnostics ───────────────────────────────────────────────────────────
     // When true, logs safe command submission info (field names, HTTP status, sanitized
     // response snippet) to help diagnose recheck/ACK failures.

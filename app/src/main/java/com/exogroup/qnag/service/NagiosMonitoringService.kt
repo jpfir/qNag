@@ -13,6 +13,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.edit
 import com.exogroup.qnag.MainActivity
 import com.exogroup.qnag.data.AckSuppressCache
+import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.data.NagiosApi
 import com.exogroup.qnag.data.NotificationMode
 import com.exogroup.qnag.data.SecureInstanceStore
@@ -95,50 +96,53 @@ class NagiosMonitoringService : Service() {
             return START_NOT_STICKY
         }
 
-        // Foreground service is active — ensure WorkManager is not running concurrently
+        // Foreground service is active — cancel WorkManager to avoid double notifications
         BackgroundPollingScheduler.cancel(applicationContext)
-
-        // Cancel the standalone alert-summary notification: in foreground mode the foreground
-        // notification IS the summary, so only one qNag notification should appear.
-        NotificationHelper.cancelAlertSummary(applicationContext)
+        MonitoringHealth.recordServiceStart(applicationContext)
 
         // Always cancel + restart the polling job.  This acts as a reload: interval changes,
-        // instance list changes, and repeated start() calls all take effect immediately without
-        // requiring a stop/start sequence from outside.
+        // instance list changes, and repeated start() calls all take effect immediately.
         pollingJob?.cancel()
         pollingJob = serviceScope.launch { pollingLoop() }
 
-        return START_NOT_STICKY
+        // START_STICKY: ask Android to restart the service if killed (best-effort).
+        // onDestroy schedules WorkManager fallback so monitoring survives even if restart fails.
+        return START_STICKY
     }
 
     override fun onDestroy() {
         serviceScope.cancel()
         val store = SecureInstanceStore(applicationContext)
         val settings = store.getAppSettings()
+        val instances = store.getInstances()
         val debug = settings.commandSettings.debugCommandSubmission
-        if (debug) android.util.Log.d("qNag",
-            "[service] destroyed: keepMonitoringActive=${settings.commandSettings.keepMonitoringActive}")
 
         if (!settings.commandSettings.keepMonitoringActive) {
-            // Foreground monitoring was disabled by the user → schedule WorkManager as fallback
-            if (debug) android.util.Log.d("qNag", "[service] scheduling WorkManager as fallback")
-            BackgroundPollingScheduler.scheduleOrCancel(applicationContext, settings, store.getInstances())
+            // User disabled reliability mode → use normal WorkManager scheduling
+            MonitoringHealth.recordServiceStop(applicationContext, "user_disabled")
+            if (debug) android.util.Log.d("qNag", "[service] destroyed: scheduling WorkManager (reliability mode off)")
+            BackgroundPollingScheduler.scheduleOrCancel(applicationContext, settings, instances)
         } else {
-            // keepMonitoringActive is still true but the OS killed the service.
-            // Do NOT start WorkManager — the user intends foreground monitoring.
-            // WorkManager is already cancelled (done in onStartCommand).
-            // TODO: boot receiver to restart the service after OS kill under foreground mode
-            if (debug) android.util.Log.d("qNag", "[service] not scheduling WorkManager (keepMonitoringActive=true after kill)")
-            BackgroundPollingScheduler.cancel(applicationContext)
+            // Reliability mode still ON but service was killed (OS pressure, timeout, etc.).
+            // Schedule WorkManager as fallback so monitoring doesn't go silent while the OS
+            // decides whether to honour START_STICKY and restart the service.
+            MonitoringHealth.recordServiceStop(applicationContext, "killed_by_os")
+            if (debug) android.util.Log.d("qNag", "[service] destroyed: scheduling WorkManager fallback (reliability mode still on)")
+            BackgroundPollingScheduler.scheduleFallback(applicationContext, settings, instances)
         }
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    // Android 15+ may call onTimeout for dataSync foreground services that run too long.
+    // Android 15 (API 35) calls onTimeout when the dataSync foreground service exceeds the
+    // system-defined background run limit.  Log safely, schedule fallback, and stop cleanly.
     @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
     override fun onTimeout(startId: Int) {
+        android.util.Log.w("qNag", "[service] onTimeout (dataSync limit reached) — scheduling WorkManager fallback")
+        MonitoringHealth.recordServiceStop(applicationContext, "timeout_api35")
+        val store = SecureInstanceStore(applicationContext)
+        BackgroundPollingScheduler.scheduleFallback(applicationContext, store.getAppSettings(), store.getInstances())
         stopSelf()
     }
 
@@ -180,6 +184,8 @@ class NagiosMonitoringService : Service() {
             if (cmdSettings.debugCommandSubmission)
                 android.util.Log.d("qNag", "[service] poll starting: targets=${targets.size} interval=${effectiveIntervalS}s")
 
+            MonitoringHealth.recordPollStart(applicationContext)
+
             // Evict expired ACK-suppress entries before the poll cycle
             AckSuppressCache.evictExpired(applicationContext)
 
@@ -212,6 +218,8 @@ class NagiosMonitoringService : Service() {
                         }
                     }
 
+                    MonitoringHealth.recordPollSuccess(applicationContext)
+
                     if (instance.id in failedIds) {
                         failedIds = failedIds - instance.id
                         if (notifSettings.notificationMode == NotificationMode.PER_PROBLEM) {
@@ -233,22 +241,33 @@ class NagiosMonitoringService : Service() {
                 }
             }
 
+            // ── Dual-notification dispatch (Goal 2) ──────────────────────────────
+            // Foreground notification stays QUIET (just monitoring status).
+            // Alert summary notification is AUDIBLE (separate, sounds on new/worse state).
             when (notifSettings.notificationMode) {
-                NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS -> {
-                    // Foreground service is the only qNag notification — embed the alert summary
-                    // directly into it.  No separate ALERT_SUMMARY_NOTIF_ID notification is posted.
-                    val (summaryTitle, bodyLines) = NotificationHelper.buildSummaryContent(
-                        allCurrentProblems, failedInstanceNames
+                NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
+                    NotificationHelper.notifySummary(
+                        applicationContext, toNotify, allCurrentProblems, failedInstanceNames, notifSettings
                     )
-                    val subtitle = "checking every ${effectiveIntervalS}s"
-                    val contentText = "${targets.size} instance${if (targets.size != 1) "s" else ""} · $subtitle"
-                    val bigText = if (bodyLines.isNotEmpty()) {
-                        bodyLines.joinToString("\n") + "\n$subtitle"
-                    } else subtitle
-                    updateForegroundNotification(summaryTitle, contentText, bigText)
-                }
                 NotificationMode.PER_PROBLEM ->
                     NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
+            }
+
+            MonitoringHealth.recordPollFinished(applicationContext)
+
+            // ── Stale monitoring self-alert ───────────────────────────────────────
+            if (cmdSettings.staleMonitoringAlertEnabled) {
+                val lastSuccess = MonitoringHealth.getSnapshot(applicationContext).lastSuccessfulPollAt
+                if (lastSuccess != null) {
+                    val staleMs = cmdSettings.monitoringStaleThresholdMinutes * 60_000L
+                    val ageMs = System.currentTimeMillis() - lastSuccess
+                    if (ageMs > staleMs) {
+                        val minAgo = ageMs / 60_000L
+                        NotificationHelper.notifyStale(applicationContext, "No successful poll in ${minAgo}m")
+                    } else {
+                        NotificationHelper.cancelStale(applicationContext)
+                    }
+                }
             }
 
             saveFingerprints(fingerprints)

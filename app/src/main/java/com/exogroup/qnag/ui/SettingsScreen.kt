@@ -108,6 +108,12 @@ fun SettingsScreen(
                 item { BatteryOptimizationSection() }
             }
 
+            item { Spacer(Modifier.height(8.dp)) }
+            item { SettingsSectionHeader("Monitoring Health") }
+            item {
+                MonitoringHealthSection(commandSettings = commandSettings)
+            }
+
             item { Spacer(Modifier.height(32.dp)) }
         }
     }
