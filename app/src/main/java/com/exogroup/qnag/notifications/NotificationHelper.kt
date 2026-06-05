@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.exogroup.qnag.MainActivity
+import com.exogroup.qnag.data.AlertSoundMode
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
 import com.exogroup.qnag.data.NotificationSettings
@@ -165,6 +166,8 @@ object NotificationHelper {
     fun cancelAlertSummary(context: Context) {
         NotificationManagerCompat.from(context).cancel(ALERT_SUMMARY_NOTIF_ID)
         saveAlertSoundState(context, 0, false)
+        // Also reset AlertSoundController state so the next alert sounds immediately
+        com.exogroup.qnag.sound.AlertSoundController.resetState(context)
     }
 
     // ── Summary notification (SUMMARY_ONLY / GROUPED_DETAILS modes) ──────────
@@ -225,17 +228,25 @@ object NotificationHelper {
         }
         val body = bodyLines.joinToString("\n")
 
-        // Load persisted sound state so restart doesn't reset severity tracking (Goal 3)
-        val (prevSeverity, lastSoundMs) = loadAlertSoundState(context)
-        val soundAllowed = shouldPlaySummarySound(
-            hasNewProblems = newProblems.isNotEmpty(),
-            currentSeverity = currentWorst,
-            settings = settings,
-            prevSeverity = prevSeverity,
-            lastSoundMs = lastSoundMs,
-        )
         val priority = if (hostDown > 0 || svcCrit > 0) NotificationCompat.PRIORITY_HIGH
                        else NotificationCompat.PRIORITY_DEFAULT
+
+        // In in-app sound modes the notification is always silent — AlertSoundController
+        // handles the actual sound, independent of channel importance settings.
+        // In NOTIFICATION_CHANNEL_ONLY mode the channel sound decision is preserved.
+        val isInAppMode = settings.alertSoundMode != AlertSoundMode.NOTIFICATION_CHANNEL_ONLY
+        val channelSoundAllowed = if (isInAppMode) false else run {
+            val (prevSeverity, lastSoundMs) = loadAlertSoundState(context)
+            val allowed = shouldPlaySummarySound(
+                hasNewProblems = newProblems.isNotEmpty(),
+                currentSeverity = currentWorst,
+                settings = settings,
+                prevSeverity = prevSeverity,
+                lastSoundMs = lastSoundMs,
+            )
+            if (allowed) saveAlertSoundState(context, currentWorst, true)
+            allowed
+        }
 
         val notif = NotificationCompat.Builder(context, CHANNEL_ALERT_SUMMARY)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
@@ -243,13 +254,24 @@ object NotificationHelper {
             .setContentText(bodyLines.firstOrNull() ?: "")
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setContentIntent(mainActivityIntent(context))
-            .setOnlyAlertOnce(!soundAllowed)
+            .setOnlyAlertOnce(!channelSoundAllowed)   // true (silent) in in-app mode
             .setPriority(priority)
             .setAutoCancel(false)
             .build()
 
         NotificationManagerCompat.from(context).notify(ALERT_SUMMARY_NOTIF_ID, notif)
-        saveAlertSoundState(context, currentWorst, soundAllowed)
+
+        // For in-app mode: delegate sound to AlertSoundController so WorkManager and the
+        // foreground service use the same logic (fingerprint tracking, cooldown, etc.)
+        if (isInAppMode) {
+            com.exogroup.qnag.sound.AlertSoundController.evaluateAndPlay(
+                context             = context,
+                allCurrentProblems  = allProblems,
+                newProblems         = newProblems,
+                failedInstanceCount = failedInstances.size,
+                settings            = settings,
+            )
+        }
     }
 
     // ── Stale monitoring alert ─────────────────────────────────────────────────

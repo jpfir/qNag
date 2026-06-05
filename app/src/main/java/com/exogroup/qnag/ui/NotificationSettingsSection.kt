@@ -1,8 +1,13 @@
 package com.exogroup.qnag.ui
 
+import android.app.Activity
 import android.content.Intent
+import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -12,11 +17,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.exogroup.qnag.data.AlertSoundMode
 import com.exogroup.qnag.data.NotificationMode
 import com.exogroup.qnag.data.NotificationSettings
 import com.exogroup.qnag.notifications.NotificationHelper
+import com.exogroup.qnag.sound.AlertSoundPlayer
 
 private const val MIN_INTERVAL = 15
 
@@ -47,6 +55,33 @@ fun NotificationSettingsSection(
             v == null -> "Enter a whole number."
             v < MIN_INTERVAL -> "Minimum interval is $MIN_INTERVAL minutes."
             else -> null
+        }
+    }
+
+    // Ringtone picker — must be registered at composable scope, not inside lambdas
+    val ringtoneLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            @Suppress("DEPRECATION")
+            val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI, Uri::class.java)
+            } else {
+                result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+            }
+            onUpdate(settings.copy(inAppSoundUri = uri?.toString()))
+        }
+    }
+
+    // Derive human-readable name for the current in-app sound
+    val currentSoundLabel = remember(settings.inAppSoundUri) {
+        if (settings.inAppSoundUri == null) {
+            "Default alarm"
+        } else {
+            try {
+                RingtoneManager.getRingtone(context, Uri.parse(settings.inAppSoundUri))
+                    ?.getTitle(context) ?: "Custom sound"
+            } catch (_: Exception) { "Custom sound" }
         }
     }
 
@@ -84,10 +119,116 @@ fun NotificationSettingsSection(
         AnimatedVisibility(visible = settings.notificationsEnabled) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
 
+                // ── qNag alert sound (in-app engine) — PRIMARY sound setting ──────────
                 Spacer(Modifier.height(4.dp))
-                NotifSubheader("Notification mode")
+                NotifSubheader("qNag alert sound")
                 Text(
-                    "Compact summary updates one notification in place instead of creating one per alert.",
+                    "In Reliability Mode, qNag plays alert sounds using its own in-app engine. " +
+                    "This works independently of Android channel settings, which can be muted or disabled.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+
+                listOf(
+                    AlertSoundMode.IN_APP_SOUND to "In-app sound (recommended)",
+                    AlertSoundMode.IN_APP_SOUND_WITH_DND_HELP to "In-app sound + DND guidance",
+                    AlertSoundMode.NOTIFICATION_CHANNEL_ONLY to "Notification channel only",
+                ).forEach { (mode, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onUpdate(settings.copy(alertSoundMode = mode)) }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = settings.alertSoundMode == mode,
+                            onClick = { onUpdate(settings.copy(alertSoundMode = mode)) },
+                        )
+                        Text(label, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                // Sound picker — shown when in-app mode is selected
+                AnimatedVisibility(settings.alertSoundMode != AlertSoundMode.NOTIFICATION_CHANNEL_ONLY) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Spacer(Modifier.height(4.dp))
+
+                        // Current sound label
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Selected sound:", style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    currentSoundLabel,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                            OutlinedButton(onClick = {
+                                val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALL)
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "qNag alert sound")
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                                    settings.inAppSoundUri?.let {
+                                        putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, Uri.parse(it))
+                                    }
+                                }
+                                ringtoneLauncher.launch(intent)
+                            }) { Text("Choose sound") }
+                        }
+
+                        NotifRow("Sound in vibrate mode (alarm stream)", settings.playSoundInVibrateMode) {
+                            onUpdate(settings.copy(playSoundInVibrateMode = it))
+                        }
+                        NotifRow("Use alarm audio stream", settings.useAlarmAudioStream) {
+                            onUpdate(settings.copy(useAlarmAudioStream = it))
+                        }
+                        Text(
+                            "Alarm stream plays even in vibrate mode on most devices. " +
+                            "Volume is controlled by system alarm volume.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        // DND guidance
+                        AnimatedVisibility(settings.alertSoundMode == AlertSoundMode.IN_APP_SOUND_WITH_DND_HELP) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                val dndGranted = remember {
+                                    val nm = context.getSystemService(android.app.NotificationManager::class.java)
+                                    nm?.isNotificationPolicyAccessGranted == true
+                                }
+                                NotifSubheader("Do Not Disturb access")
+                                if (dndGranted) {
+                                    Text("DND policy access granted.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = okGreenColor())
+                                } else {
+                                    Text("Grant DND access so qNag sounds can bypass Do Not Disturb.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error)
+                                    OutlinedButton(
+                                        onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) { Text("Grant DND access") }
+                                }
+                                NotifRow("Help bypass Do Not Disturb", settings.helpBypassDnd) {
+                                    onUpdate(settings.copy(helpBypassDnd = it))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Notification mode ─────────────────────────────────────────────────
+                Spacer(Modifier.height(4.dp))
+                NotifSubheader("Notification display mode")
+                Text(
+                    "Compact summary shows one notification instead of one per alert.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -238,91 +379,32 @@ fun NotificationSettingsSection(
                     }
                 }
 
-                // ── In-app alert sound (Goals 2, 3, 4) ───────────────────────────────
+                // ── Android notification channel settings (secondary / channel-only mode) ───
                 Spacer(Modifier.height(8.dp))
-                NotifSubheader("In-app alert sound engine")
+                NotifSubheader("Android notification channel settings")
                 Text(
-                    "qNag can play alert sounds via its own audio engine, independent of " +
-                    "Android notification-channel settings.  This is more reliable for on-call use " +
-                    "because channel sound can be muted by the user or OS.",
+                    if (settings.alertSoundMode == AlertSoundMode.NOTIFICATION_CHANNEL_ONLY)
+                        "Channel-only mode: Android channel settings control qNag's alert sound."
+                    else
+                        "These settings do NOT affect qNag's in-app alert sound. " +
+                        "They only apply when using Notification channel only mode.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (settings.alertSoundMode == AlertSoundMode.NOTIFICATION_CHANNEL_ONLY)
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                 )
-                Spacer(Modifier.height(4.dp))
-
-                listOf(
-                    com.exogroup.qnag.data.AlertSoundMode.IN_APP_SOUND to "In-app sound (recommended)",
-                    com.exogroup.qnag.data.AlertSoundMode.IN_APP_SOUND_WITH_DND_HELP to "In-app sound + DND guidance",
-                    com.exogroup.qnag.data.AlertSoundMode.NOTIFICATION_CHANNEL_ONLY to "Notification channel only",
-                ).forEach { (mode, label) ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onUpdate(settings.copy(alertSoundMode = mode)) }
-                            .padding(vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(
-                            selected = settings.alertSoundMode == mode,
-                            onClick = { onUpdate(settings.copy(alertSoundMode = mode)) },
-                        )
-                        Text(label, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-
-                AnimatedVisibility(settings.alertSoundMode != com.exogroup.qnag.data.AlertSoundMode.NOTIFICATION_CHANNEL_ONLY) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Spacer(Modifier.height(4.dp))
-                        NotifRow("Sound even in vibrate mode (uses alarm stream)", settings.playSoundInVibrateMode) {
-                            onUpdate(settings.copy(playSoundInVibrateMode = it))
-                        }
-                        NotifRow("Use alarm audio stream (bypasses ringer mode)", settings.useAlarmAudioStream) {
-                            onUpdate(settings.copy(useAlarmAudioStream = it))
-                        }
-                        Text(
-                            "qNag volume is controlled by system alarm volume. Android DND and " +
-                            "OEM restrictions may still affect playback on some devices.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-
-                // ── DND guidance ──────────────────────────────────────────────────────
-                AnimatedVisibility(settings.alertSoundMode == com.exogroup.qnag.data.AlertSoundMode.IN_APP_SOUND_WITH_DND_HELP) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Spacer(Modifier.height(4.dp))
-                        NotifSubheader("Do Not Disturb guidance")
-                        val dndGranted = remember {
-                            val nm = context.getSystemService(android.app.NotificationManager::class.java)
-                            nm?.isNotificationPolicyAccessGranted == true
-                        }
-                        if (dndGranted) {
-                            Text(
-                                "DND policy access is granted. qNag can set channels to bypass DND.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = com.exogroup.qnag.ui.okGreenColor(),
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                }
                             )
-                        } else {
-                            Text(
-                                "DND policy access is not granted. Grant it so qNag-controlled " +
-                                "sounds can bypass Do Not Disturb when needed.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error,
-                            )
-                            OutlinedButton(
-                                onClick = {
-                                    context.startActivity(
-                                        Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
-                                    )
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) { Text("Grant DND access") }
-                        }
-                        NotifRow("Help bypass Do Not Disturb", settings.helpBypassDnd) {
-                            onUpdate(settings.copy(helpBypassDnd = it))
-                        }
-                    }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Open app notification settings") }
                 }
             }
         }
