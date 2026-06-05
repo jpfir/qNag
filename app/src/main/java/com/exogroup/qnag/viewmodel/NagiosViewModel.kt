@@ -10,6 +10,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.exogroup.qnag.data.AckSuppressCache
 import com.exogroup.qnag.data.CommandSettings
+import com.exogroup.qnag.data.InstanceSummary
 import com.exogroup.qnag.data.NagiosApi
 import com.exogroup.qnag.data.NagiosInstance
 import com.exogroup.qnag.data.NagiosProblem
@@ -26,18 +27,27 @@ import kotlinx.coroutines.withContext
 
 sealed class DashboardState {
     object Idle : DashboardState()
-    data class Loading(val previousProblems: List<NagiosProblem>? = null) : DashboardState()
+    data class Loading(
+        val previousProblems: List<NagiosProblem>? = null,
+        val previousSummaries: List<InstanceSummary> = emptyList(),
+    ) : DashboardState()
     /**
-     * @param partialErrors Non-empty when some instances failed in ALL mode while others
-     *   succeeded.  Shown as a warning banner alongside the partial problem list.
-     *   Empty list means all fetches succeeded.
+     * @param partialErrors Non-empty when some instances failed in ALL mode; shown as a warning
+     *   banner alongside the partial problem list.
+     * @param instanceSummaries One entry per fetched instance (success or error).  Empty during
+     *   initial load before the first successful fetch.
      */
     data class Success(
         val problems: List<NagiosProblem>,
         val lastUpdated: Long,
         val partialErrors: List<String> = emptyList(),
+        val instanceSummaries: List<InstanceSummary> = emptyList(),
     ) : DashboardState()
-    data class Error(val message: String, val previousProblems: List<NagiosProblem>? = null) : DashboardState()
+    data class Error(
+        val message: String,
+        val previousProblems: List<NagiosProblem>? = null,
+        val previousSummaries: List<InstanceSummary> = emptyList(),
+    ) : DashboardState()
 }
 
 // ── Command (ACK / recheck) state ─────────────────────────────────────────────
@@ -82,16 +92,23 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         fetchJob?.cancel()
         lastFetchTarget = FetchTarget.Single(instance)
         val stale = currentProblems()
-        uiState = DashboardState.Loading(stale)
+        val staleSummaries = currentSummaries()
+        uiState = DashboardState.Loading(stale, staleSummaries)
         fetchJob = viewModelScope.launch {
             try {
                 val problems = withContext(Dispatchers.IO) { api.fetchProblems(instance) }
+                val now = System.currentTimeMillis()
                 reconcileLocalAck(instance.id, problems)
-                uiState = DashboardState.Success(problems, System.currentTimeMillis())
+                val summary = buildInstanceSummary(instance, problems, now)
+                uiState = DashboardState.Success(problems, now, instanceSummaries = listOf(summary))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                uiState = DashboardState.Error(e.message ?: "Unknown network error", stale)
+                val errSummary = buildErrorSummary(
+                    instance, sanitizeError(e.message),
+                    staleSummaries.find { it.instanceId == instance.id },
+                )
+                uiState = DashboardState.Error(e.message ?: "Unknown network error", stale, listOf(errSummary))
             }
         }
     }
@@ -109,16 +126,21 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         fetchJob?.cancel()
         lastFetchTarget = FetchTarget.All(instances)
         val stale = currentProblems()
-        uiState = DashboardState.Loading(stale)
+        val staleSummaries = currentSummaries()
+        uiState = DashboardState.Loading(stale, staleSummaries)
 
         fetchJob = viewModelScope.launch {
             try {
+                val now = System.currentTimeMillis()
                 val deferreds = instances.map { inst ->
                     async(Dispatchers.IO) {
                         try {
-                            Pair(api.fetchProblems(inst), null as String?)
+                            val problems = api.fetchProblems(inst)
+                            Triple(problems, null as String?, buildInstanceSummary(inst, problems, now))
                         } catch (e: Exception) {
-                            Pair(emptyList<NagiosProblem>(), "${inst.name}: ${sanitizeError(e.message)}")
+                            val errMsg = "${inst.name}: ${sanitizeError(e.message)}"
+                            val staleSum = staleSummaries.find { it.instanceId == inst.id }
+                            Triple(emptyList<NagiosProblem>(), errMsg, buildErrorSummary(inst, errMsg, staleSum))
                         }
                     }
                 }.awaitAll()
@@ -126,21 +148,23 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 val allProblems = deferreds.flatMap { it.first }
                     .sortedWith(compareBy({ severityRank(it) }, { it.hostName }, { serviceNameOf(it) }))
                 val errors = deferreds.mapNotNull { it.second }
+                val summaries = deferreds.map { it.third }
 
                 reconcileLocalAckAll(allProblems)
 
                 if (allProblems.isEmpty() && errors.size == instances.size) {
                     uiState = DashboardState.Error(
                         "Failed to refresh all instances. ${errors.firstOrNull() ?: ""}",
-                        stale
+                        stale,
+                        summaries,
                     )
                 } else {
-                    uiState = DashboardState.Success(allProblems, System.currentTimeMillis(), errors)
+                    uiState = DashboardState.Success(allProblems, now, errors, summaries)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                uiState = DashboardState.Error(e.message ?: "Unknown network error", stale)
+                uiState = DashboardState.Error(e.message ?: "Unknown network error", stale, staleSummaries)
             }
         }
     }
@@ -440,6 +464,51 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fun clearCommandState() { commandState = CommandState.Idle }
+
+    // ── Instance summaries ────────────────────────────────────────────────────
+
+    private fun currentSummaries(): List<InstanceSummary> = when (val s = uiState) {
+        is DashboardState.Success -> s.instanceSummaries
+        is DashboardState.Loading -> s.previousSummaries
+        is DashboardState.Error -> s.previousSummaries
+        else -> emptyList()
+    }
+
+    private fun buildInstanceSummary(
+        instance: NagiosInstance,
+        problems: List<NagiosProblem>,
+        lastUpdated: Long,
+    ): InstanceSummary = InstanceSummary(
+        instanceId = instance.id,
+        instanceName = instance.name,
+        enabled = instance.enabled,
+        notificationsEnabled = instance.notificationsEnabled,
+        lastUpdated = lastUpdated,
+        fetchError = null,
+        hostDown = problems.count { it is NagiosProblem.HostProblem && it.status == NagiosStatus.HOST_DOWN },
+        hostUnreachable = problems.count { it is NagiosProblem.HostProblem && it.status == NagiosStatus.HOST_UNREACHABLE },
+        hostAcked = problems.count { it is NagiosProblem.HostProblem && it.acknowledged },
+        serviceCritical = problems.count { it is NagiosProblem.ServiceProblem && it.status == NagiosStatus.SERVICE_CRITICAL },
+        serviceWarning = problems.count { it is NagiosProblem.ServiceProblem && it.status == NagiosStatus.SERVICE_WARNING },
+        serviceUnknown = problems.count { it is NagiosProblem.ServiceProblem && it.status == NagiosStatus.SERVICE_UNKNOWN },
+        serviceAcked = problems.count { it is NagiosProblem.ServiceProblem && it.acknowledged },
+        totalProblems = problems.size,
+    )
+
+    /** Stale-preserving error summary: keeps last-known counts and lastUpdated when a stale entry exists. */
+    private fun buildErrorSummary(
+        instance: NagiosInstance,
+        error: String,
+        stale: InstanceSummary?,
+    ): InstanceSummary = stale?.copy(fetchError = error)
+        ?: InstanceSummary(
+            instanceId = instance.id, instanceName = instance.name,
+            enabled = instance.enabled, notificationsEnabled = instance.notificationsEnabled,
+            lastUpdated = null, fetchError = error,
+            hostDown = 0, hostUnreachable = 0, hostAcked = 0,
+            serviceCritical = 0, serviceWarning = 0, serviceUnknown = 0,
+            serviceAcked = 0, totalProblems = 0,
+        )
 
     private fun currentProblems(): List<NagiosProblem>? = when (val s = uiState) {
         is DashboardState.Success -> s.problems

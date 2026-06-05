@@ -31,9 +31,11 @@ object NotificationHelper {
     const val CHANNEL_SERVICE_CRITICAL = "qnag_service_critical"
     const val CHANNEL_SERVICE_WARNING = "qnag_service_warning"
     const val CHANNEL_SERVICE_UNKNOWN = "qnag_service_unknown"
+    const val CHANNEL_ALERT_SUMMARY = "qnag_alert_summary"   // compact single-summary mode
     const val CHANNEL_ALERTS = "qnag_alerts"                 // legacy fallback
 
     const val MONITORING_SERVICE_NOTIF_ID = 9001
+    const val ALERT_SUMMARY_NOTIF_ID = 9002
 
     // When ≥ this many new problems of the same state arrive in one poll cycle,
     // collapse them into a single summary notification to prevent a sound storm.
@@ -42,6 +44,10 @@ object NotificationHelper {
     // In-memory per-channel last-sound timestamps.  Resets on process restart — intentional;
     // avoids stale SharedPreferences reads and is good enough for anti-flood.
     private val lastSoundTimestampMs = ConcurrentHashMap<String, Long>()
+
+    // Tracks worst severity seen in the last summary poll for sound-change detection.
+    // 0 = all green, 1 = UNKNOWN, 2 = WARNING, 3 = UNREACHABLE, 4 = CRITICAL, 5 = HOST DOWN.
+    private var lastSummaryWorstSeverity = 0
 
     // ── Channel creation ──────────────────────────────────────────────────────
 
@@ -82,6 +88,10 @@ object NotificationHelper {
                 "Service is in UNKNOWN state")
         )
         mgr.createNotificationChannel(
+            channel(CHANNEL_ALERT_SUMMARY, "qNag Alert Summary", NotificationManager.IMPORTANCE_DEFAULT,
+                "Single compact notification summarising all current Nagios problems")
+        )
+        mgr.createNotificationChannel(
             channel(CHANNEL_ALERTS, "qNag Alerts (legacy)", NotificationManager.IMPORTANCE_DEFAULT,
                 "Legacy fallback channel")
         )
@@ -102,6 +112,166 @@ object NotificationHelper {
         problem is NagiosProblem.ServiceProblem && problem.status == NagiosStatus.SERVICE_CRITICAL -> CHANNEL_SERVICE_CRITICAL
         problem is NagiosProblem.ServiceProblem && problem.status == NagiosStatus.SERVICE_WARNING -> CHANNEL_SERVICE_WARNING
         else -> CHANNEL_SERVICE_UNKNOWN
+    }
+
+    // ── Summary content helpers (shared between foreground service and worker) ─
+
+    /**
+     * Build summary title and per-instance body lines without posting a notification.
+     * Used by the foreground service to embed the summary into its own notification,
+     * avoiding a duplicate alert-summary notification in the notification shade.
+     *
+     * @return Pair of (title, bodyLines) where bodyLines is one line per instance.
+     */
+    fun buildSummaryContent(
+        allProblems: List<ProblemToNotify>,
+        failedInstances: List<String>,
+    ): Pair<String, List<String>> {
+        val hostDown = allProblems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_DOWN }
+        val hostUnr  = allProblems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_UNREACHABLE }
+        val svcCrit  = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_CRITICAL }
+        val svcWarn  = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_WARNING }
+        val svcUnk   = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_UNKNOWN }
+        val title = buildSummaryTitle(hostDown, hostUnr, svcCrit, svcWarn, svcUnk, failedInstances.size)
+        val instanceGroups = allProblems.groupBy { it.instanceName.ifEmpty { it.instanceId } }
+        val bodyLines = buildList {
+            instanceGroups.forEach { (name, probs) ->
+                val d = probs.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_DOWN }
+                val u = probs.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_UNREACHABLE }
+                val c = probs.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_CRITICAL }
+                val w = probs.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_WARNING }
+                val n = probs.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_UNKNOWN }
+                val counts = listOfNotNull(
+                    if (d > 0) "D$d" else null, if (u > 0) "U$u" else null,
+                    if (c > 0) "C$c" else null, if (w > 0) "W$w" else null, if (n > 0) "N$n" else null,
+                )
+                add("$name: ${if (counts.isEmpty()) "OK" else counts.joinToString(" · ")}")
+            }
+            failedInstances.forEach { add("$it: FAILED") }
+        }
+        return title to bodyLines
+    }
+
+    /**
+     * Cancel the standalone alert-summary notification.
+     * Called when the foreground service starts so only one qNag notification is visible.
+     */
+    fun cancelAlertSummary(context: Context) {
+        NotificationManagerCompat.from(context).cancel(ALERT_SUMMARY_NOTIF_ID)
+        lastSummaryWorstSeverity = 0
+    }
+
+    // ── Summary notification (SUMMARY_ONLY / GROUPED_DETAILS modes) ──────────
+
+    /**
+     * Posts or updates the single compact alert-summary notification.
+     *
+     * @param newProblems   Problems that are new this poll cycle — drive sound decisions.
+     * @param allProblems   All current problems passing notification filters — drive title/body text.
+     * @param failedInstances Instance names whose fetch failed this cycle.
+     */
+    @SuppressLint("MissingPermission")
+    fun notifySummary(
+        context: Context,
+        newProblems: List<ProblemToNotify>,
+        allProblems: List<ProblemToNotify>,
+        failedInstances: List<String>,
+        settings: NotificationSettings,
+    ) {
+        if (!hasPermission(context)) return
+
+        // All-clear: cancel the summary notification rather than posting "all green"
+        if (allProblems.isEmpty() && failedInstances.isEmpty()) {
+            NotificationManagerCompat.from(context).cancel(ALERT_SUMMARY_NOTIF_ID)
+            lastSummaryWorstSeverity = 0
+            return
+        }
+
+        val hostDown = allProblems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_DOWN }
+        val hostUnr  = allProblems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_UNREACHABLE }
+        val svcCrit  = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_CRITICAL }
+        val svcWarn  = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_WARNING }
+        val svcUnk   = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_UNKNOWN }
+        val currentWorst = worstSeverity(hostDown, hostUnr, svcCrit, svcWarn, svcUnk)
+
+        val title = buildSummaryTitle(hostDown, hostUnr, svcCrit, svcWarn, svcUnk, failedInstances.size)
+
+        // Per-instance body lines: "Prod: D1 · C3 · W8"
+        val instanceGroups = allProblems.groupBy { it.instanceName.ifEmpty { it.instanceId } }
+        val bodyLines = buildList {
+            instanceGroups.forEach { (name, probs) ->
+                val d = probs.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_DOWN }
+                val u = probs.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_UNREACHABLE }
+                val c = probs.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_CRITICAL }
+                val w = probs.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_WARNING }
+                val n = probs.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_UNKNOWN }
+                val counts = listOfNotNull(
+                    if (d > 0) "D$d" else null, if (u > 0) "U$u" else null,
+                    if (c > 0) "C$c" else null, if (w > 0) "W$w" else null, if (n > 0) "N$n" else null,
+                )
+                add("$name: ${counts.joinToString(" · ")}")
+            }
+            failedInstances.forEach { add("$it: FAILED") }
+        }
+        val body = bodyLines.joinToString("\n")
+
+        val soundAllowed = shouldPlaySummarySound(newProblems.isNotEmpty(), currentWorst, settings)
+        val priority = if (hostDown > 0 || svcCrit > 0) NotificationCompat.PRIORITY_HIGH
+                       else NotificationCompat.PRIORITY_DEFAULT
+
+        val notif = NotificationCompat.Builder(context, CHANNEL_ALERT_SUMMARY)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle(title)
+            .setContentText(bodyLines.firstOrNull() ?: "")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(mainActivityIntent(context))
+            .setOnlyAlertOnce(!soundAllowed)
+            .setPriority(priority)
+            .setAutoCancel(false)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(ALERT_SUMMARY_NOTIF_ID, notif)
+
+        if (soundAllowed) lastSoundTimestampMs["__global__"] = System.currentTimeMillis()
+        lastSummaryWorstSeverity = currentWorst
+    }
+
+    private fun buildSummaryTitle(
+        hostDown: Int, hostUnr: Int, svcCrit: Int, svcWarn: Int, svcUnk: Int, failedCount: Int,
+    ): String {
+        val parts = listOfNotNull(
+            if (hostDown > 0) "$hostDown host${if (hostDown > 1) "s" else ""} down" else null,
+            if (hostUnr  > 0) "$hostUnr unreachable" else null,
+            if (svcCrit  > 0) "$svcCrit critical" else null,
+            if (svcWarn  > 0) "$svcWarn warning" else null,
+            if (svcUnk   > 0) "$svcUnk unknown" else null,
+            if (failedCount > 0) "$failedCount instance${if (failedCount > 1) "s" else ""} failed" else null,
+        )
+        return if (parts.isEmpty()) "qNag: all green" else "qNag: ${parts.joinToString(", ")}"
+    }
+
+    private fun worstSeverity(hostDown: Int, hostUnr: Int, svcCrit: Int, svcWarn: Int, svcUnk: Int): Int = when {
+        hostDown > 0 -> 5
+        svcCrit  > 0 -> 4
+        hostUnr  > 0 -> 3
+        svcWarn  > 0 -> 2
+        svcUnk   > 0 -> 1
+        else         -> 0
+    }
+
+    private fun shouldPlaySummarySound(
+        hasNewProblems: Boolean,
+        currentSeverity: Int,
+        settings: NotificationSettings,
+    ): Boolean {
+        if (currentSeverity == 0) return false
+        val now = System.currentTimeMillis()
+        val lastSound = lastSoundTimestampMs["__global__"] ?: 0L
+        val cooldownMs = settings.globalSoundCooldownSeconds.toLong() * 1000L
+        if (settings.globalSoundCooldownSeconds > 0 && (now - lastSound) < cooldownMs) return false
+        return currentSeverity > lastSummaryWorstSeverity ||
+               (hasNewProblems && lastSummaryWorstSeverity == 0) ||
+               (hasNewProblems && settings.repeatSameProblemSound)
     }
 
     // ── Batch notification (anti-flood) ───────────────────────────────────────

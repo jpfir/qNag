@@ -28,4 +28,9 @@ data class NotificationSettings(
     // When false (default), the same problem fingerprint never gets another sound
     // notification unless its status changes.  Set true to re-sound on every poll.
     val repeatSameProblemSound: Boolean = false,
+
+    // ── Notification display mode ──────────────────────────────────────────────
+    // SUMMARY_ONLY (default): one compact summary notification updated in place.
+    // PER_PROBLEM: one notification per problem (legacy / noisy).
+    val notificationMode: NotificationMode = NotificationMode.SUMMARY_ONLY,
 )

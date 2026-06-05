@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -158,6 +159,18 @@ fun DashboardScreen(
         }
     }
 
+    // Helper: switch to a specific instance from the summary panel tap (mirrors InstanceSelector logic)
+    val onSwitchToInstance: (NagiosInstance) -> Unit = { inst ->
+        val scopeStr = "INSTANCE:${inst.id}"
+        if (inst.id != instance.id) {
+            onScopeChanged(scopeStr)
+            onSwitchInstance(inst)
+        } else {
+            selectedInstance = InstanceSelection.Single(inst)
+            onScopeChanged(scopeStr)
+        }
+    }
+
     // ACK / recheck helpers that route correctly in single vs ALL mode
     fun doAck(problems: List<NagiosProblem>) = when (val sel = selectedInstance) {
         is InstanceSelection.All -> nagiosViewModel.acknowledgeProblems(enabledInstances, problems, commandSettings)
@@ -242,6 +255,9 @@ fun DashboardScreen(
             selectedIds = selectedIds,
             isSelectionMode = isSelectionMode,
             showInstanceNames = showInstanceNames,
+            isAllMode = selectedInstance is InstanceSelection.All,
+            enabledInstances = enabledInstances,
+            onSelectInstance = onSwitchToInstance,
             isLocallyAcknowledged = isLocallyAcked,
             problemKey = problemKey,
             onToggleSelect = { key -> selectedIds = if (selectedIds.contains(key)) selectedIds - key else selectedIds + key },
@@ -273,6 +289,9 @@ private fun DashboardContent(
     selectedIds: Set<String>,
     isSelectionMode: Boolean,
     showInstanceNames: Boolean,
+    isAllMode: Boolean,
+    enabledInstances: List<NagiosInstance>,
+    onSelectInstance: (NagiosInstance) -> Unit,
     isLocallyAcknowledged: (NagiosProblem) -> Boolean,
     problemKey: (NagiosProblem) -> String,
     onToggleSelect: (String) -> Unit,
@@ -282,7 +301,24 @@ private fun DashboardContent(
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Extract stale or fresh summaries from whichever state is active
+    val summaries = when (state) {
+        is DashboardState.Success -> state.instanceSummaries
+        is DashboardState.Loading -> state.previousSummaries
+        is DashboardState.Error -> state.previousSummaries
+        else -> emptyList()
+    }
+
     Column(modifier = modifier) {
+        if (summaries.isNotEmpty()) {
+            InstanceSummaryPanel(
+                summaries = summaries,
+                isAllMode = isAllMode,
+                enabledInstances = enabledInstances,
+                onSelectInstance = onSelectInstance,
+            )
+            Spacer(Modifier.height(4.dp))
+        }
         when (state) {
             is DashboardState.Error -> {
                 ErrorBanner(message = state.message, onRetry = onRetry)
@@ -294,7 +330,8 @@ private fun DashboardContent(
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         problemKey = problemKey, onToggleSelect = onToggleSelect, onLongPress = onLongPress,
                         onAck = onAck, onRecheck = onRecheck,
-                        header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) })
+                        header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
+                        isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
                 }
             }
 
@@ -308,7 +345,8 @@ private fun DashboardContent(
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         problemKey = problemKey, onToggleSelect = onToggleSelect, onLongPress = onLongPress,
                         onAck = onAck, onRecheck = onRecheck,
-                        header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) })
+                        header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
+                        isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
                 } else {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
@@ -342,7 +380,8 @@ private fun DashboardContent(
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         problemKey = problemKey, onToggleSelect = onToggleSelect, onLongPress = onLongPress,
                         onAck = onAck, onRecheck = onRecheck,
-                        header = { SummaryRow(visibleCount = visible.size, totalCount = state.problems.size, lastUpdated = state.lastUpdated, stale = false) })
+                        header = { SummaryRow(visibleCount = visible.size, totalCount = state.problems.size, lastUpdated = state.lastUpdated, stale = false) },
+                        isRefreshing = false, onRefresh = onRetry)
                 }
             }
 
@@ -351,6 +390,7 @@ private fun DashboardContent(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ProblemList(
     problems: List<NagiosProblem>,
@@ -364,24 +404,32 @@ private fun ProblemList(
     onAck: (String) -> Unit,
     onRecheck: (String) -> Unit,
     header: @Composable () -> Unit,
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
 ) {
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
-        item { header() }
-        items(problems, key = { problemKey(it) }) { problem ->
-            val key = problemKey(problem)
-            val locallyAcked = isLocallyAcknowledged(problem)
-            ProblemCard(
-                problem = problem,
-                isSelected = selectedIds.contains(key),
-                isSelectionMode = isSelectionMode,
-                isAcknowledged = problem.acknowledged || locallyAcked,
-                isPendingAck = locallyAcked && !problem.acknowledged,
-                instanceName = if (showInstanceNames) problem.instanceName else "",
-                onToggleSelect = { onToggleSelect(key) },
-                onLongPress = { onLongPress(key) },
-                onAck = { onAck(key) },
-                onRecheck = { onRecheck(key) },
-            )
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = onRefresh,
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            item { header() }
+            items(problems, key = { problemKey(it) }) { problem ->
+                val key = problemKey(problem)
+                val locallyAcked = isLocallyAcknowledged(problem)
+                ProblemCard(
+                    problem = problem,
+                    isSelected = selectedIds.contains(key),
+                    isSelectionMode = isSelectionMode,
+                    isAcknowledged = problem.acknowledged || locallyAcked,
+                    isPendingAck = locallyAcked && !problem.acknowledged,
+                    instanceName = if (showInstanceNames) problem.instanceName else "",
+                    onToggleSelect = { onToggleSelect(key) },
+                    onLongPress = { onLongPress(key) },
+                    onAck = { onAck(key) },
+                    onRecheck = { onRecheck(key) },
+                )
+            }
         }
     }
 }

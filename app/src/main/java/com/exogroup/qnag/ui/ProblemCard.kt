@@ -135,45 +135,60 @@ private fun ProblemCardContent(
     instanceName: String = "",
 ) {
     Column(modifier = Modifier.padding(12.dp)) {
-        when (problem) {
-            is NagiosProblem.ServiceProblem -> {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(problem.hostName, fontWeight = FontWeight.Bold)
-                        Text(problem.serviceName, fontWeight = FontWeight.SemiBold)
+        // ── Name block — instance chip floats to top-right so names use full width ──
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                when (problem) {
+                    is NagiosProblem.ServiceProblem -> {
+                        Text(
+                            problem.hostName,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            problem.serviceName,
+                            fontWeight = FontWeight.SemiBold,
+                            overflow = TextOverflow.Ellipsis,
+                            maxLines = 2,
+                        )
                     }
-                    if (instanceName.isNotEmpty()) {
-                        Spacer(Modifier.width(4.dp))
-                        InstanceBadge(instanceName)
+                    is NagiosProblem.HostProblem -> {
+                        Text(
+                            "[HOST] ${problem.hostName}",
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
-                    if (isAcknowledged || isPendingAck) {
-                        Spacer(Modifier.width(4.dp))
-                        AckBadge(pending = isPendingAck && !problem.acknowledged)
-                    }
-                    Spacer(Modifier.width(4.dp))
-                    StatusBadge(serviceStatusLabel(problem.status))
                 }
             }
-            is NagiosProblem.HostProblem -> {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "[HOST] ${problem.hostName}",
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (instanceName.isNotEmpty()) {
-                        Spacer(Modifier.width(4.dp))
-                        InstanceBadge(instanceName)
-                    }
-                    if (isAcknowledged || isPendingAck) {
-                        Spacer(Modifier.width(4.dp))
-                        AckBadge(pending = isPendingAck && !problem.acknowledged)
-                    }
-                    Spacer(Modifier.width(4.dp))
-                    StatusBadge(hostStatusLabel(problem.status))
-                }
+            // Instance chip anchored to top-right; only shown in ALL mode (instanceName non-empty)
+            if (instanceName.isNotEmpty()) {
+                Spacer(Modifier.width(4.dp))
+                InstanceBadge(instanceName)
             }
         }
+
+        // ── Severity / ACK chips — status and ACK only, no instance clutter ──
+        Spacer(Modifier.height(4.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            when (problem) {
+                is NagiosProblem.ServiceProblem -> StatusBadge(serviceStatusLabel(problem.status))
+                is NagiosProblem.HostProblem    -> StatusBadge(hostStatusLabel(problem.status))
+            }
+            if (isAcknowledged || isPendingAck) {
+                AckBadge(pending = isPendingAck && !problem.acknowledged)
+            }
+        }
+
+        // ── Plugin output ─────────────────────────────────────────────────────
         Spacer(Modifier.height(4.dp))
         SelectionContainer {
             Text(

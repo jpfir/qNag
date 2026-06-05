@@ -135,6 +135,10 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 globalSoundCooldownSeconds = o.get("globalSoundCooldownSeconds")?.asInt ?: 300,
                 perStateSoundCooldownSeconds = o.get("perStateSoundCooldownSeconds")?.asInt ?: 300,
                 repeatSameProblemSound = o.get("repeatSameProblemSound")?.asBoolean ?: false,
+                notificationMode = try {
+                    o.get("notificationMode")?.takeIf { !it.isJsonNull }?.asString
+                        ?.let { NotificationMode.valueOf(it) }
+                } catch (_: Exception) { null } ?: NotificationMode.SUMMARY_ONLY,
             )
         } catch (_: Exception) { NotificationSettings() }
     }

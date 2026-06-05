@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -13,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.exogroup.qnag.data.NotificationMode
 import com.exogroup.qnag.data.NotificationSettings
 import com.exogroup.qnag.notifications.NotificationHelper
 
@@ -81,6 +83,34 @@ fun NotificationSettingsSection(
 
         AnimatedVisibility(visible = settings.notificationsEnabled) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+
+                Spacer(Modifier.height(4.dp))
+                NotifSubheader("Notification mode")
+                Text(
+                    "Compact summary updates one notification in place instead of creating one per alert.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                listOf(
+                    NotificationMode.SUMMARY_ONLY  to "Compact summary (recommended)",
+                    NotificationMode.GROUPED_DETAILS to "Grouped details",
+                    NotificationMode.PER_PROBLEM   to "Per problem (noisy)",
+                ).forEach { (mode, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onUpdate(settings.copy(notificationMode = mode)) }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = settings.notificationMode == mode,
+                            onClick = { onUpdate(settings.copy(notificationMode = mode)) },
+                        )
+                        Text(label, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
 
                 Spacer(Modifier.height(4.dp))
                 NotifSubheader("Notify on")

@@ -14,6 +14,7 @@ import androidx.core.content.edit
 import com.exogroup.qnag.MainActivity
 import com.exogroup.qnag.data.AckSuppressCache
 import com.exogroup.qnag.data.NagiosApi
+import com.exogroup.qnag.data.NotificationMode
 import com.exogroup.qnag.data.SecureInstanceStore
 import com.exogroup.qnag.data.applyFilters
 import com.exogroup.qnag.data.fetchFailureNotificationId
@@ -97,6 +98,10 @@ class NagiosMonitoringService : Service() {
         // Foreground service is active — ensure WorkManager is not running concurrently
         BackgroundPollingScheduler.cancel(applicationContext)
 
+        // Cancel the standalone alert-summary notification: in foreground mode the foreground
+        // notification IS the summary, so only one qNag notification should appear.
+        NotificationHelper.cancelAlertSummary(applicationContext)
+
         // Always cancel + restart the polling job.  This acts as a reload: interval changes,
         // instance list changes, and repeated start() calls all take effect immediately without
         // requiring a stop/start sequence from outside.
@@ -167,9 +172,9 @@ class NagiosMonitoringService : Service() {
             }
 
             val effectiveIntervalS = cmdSettings.foregroundPollingIntervalSeconds.coerceAtLeast(30)
-            // Update notification to show real instance count and interval
+            // Update notification with poll-in-progress text (full summary posted at end of poll)
             updateForegroundNotification(
-                "Checking ${targets.size} instance${if (targets.size != 1) "s" else ""} every ${effectiveIntervalS}s"
+                contentText = "${targets.size} instance${if (targets.size != 1) "s" else ""} · checking every ${effectiveIntervalS}s"
             )
 
             if (cmdSettings.debugCommandSubmission)
@@ -181,6 +186,8 @@ class NagiosMonitoringService : Service() {
             var fingerprints = loadFingerprints()
             var failedIds = loadFailedInstances()
             val toNotify = mutableListOf<ProblemToNotify>()
+            val allCurrentProblems = mutableListOf<ProblemToNotify>()
+            val failedInstanceNames = mutableListOf<String>()
 
             for (instance in targets) {
                 try {
@@ -197,6 +204,7 @@ class NagiosMonitoringService : Service() {
                         if (!shouldNotify(problem, notifSettings)) continue
                         if (notifSettings.notifyOnlyUnacknowledged &&
                             AckSuppressCache.isSuppressed(applicationContext, instance.id, problem)) continue
+                        allCurrentProblems += ProblemToNotify(instance.id, instance.name, problem)
                         val fp = problemFingerprint(instance.id, problem)
                         val isNew = fp !in knownForInstance
                         if (!cmdSettings.notifyOnlyNewProblems || isNew) {
@@ -206,20 +214,42 @@ class NagiosMonitoringService : Service() {
 
                     if (instance.id in failedIds) {
                         failedIds = failedIds - instance.id
-                        NotificationHelper.cancelFetchFailure(applicationContext, instance.id)
+                        if (notifSettings.notificationMode == NotificationMode.PER_PROBLEM) {
+                            NotificationHelper.cancelFetchFailure(applicationContext, instance.id)
+                        }
                     }
 
                 } catch (e: Exception) {
-                    // Never log verbatim — may contain credentials
                     val safeError = sanitizeError(e.message)
-                    if (cmdSettings.notifyOnFetchFailure && instance.id !in failedIds) {
-                        NotificationHelper.notifyFetchFailure(applicationContext, instance.id, instance.name, safeError)
-                        failedIds = failedIds + instance.id
+                    when (notifSettings.notificationMode) {
+                        NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
+                            failedInstanceNames += instance.name
+                        NotificationMode.PER_PROBLEM ->
+                            if (cmdSettings.notifyOnFetchFailure && instance.id !in failedIds) {
+                                NotificationHelper.notifyFetchFailure(applicationContext, instance.id, instance.name, safeError)
+                                failedIds = failedIds + instance.id
+                            }
                     }
                 }
             }
 
-            NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
+            when (notifSettings.notificationMode) {
+                NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS -> {
+                    // Foreground service is the only qNag notification — embed the alert summary
+                    // directly into it.  No separate ALERT_SUMMARY_NOTIF_ID notification is posted.
+                    val (summaryTitle, bodyLines) = NotificationHelper.buildSummaryContent(
+                        allCurrentProblems, failedInstanceNames
+                    )
+                    val subtitle = "checking every ${effectiveIntervalS}s"
+                    val contentText = "${targets.size} instance${if (targets.size != 1) "s" else ""} · $subtitle"
+                    val bigText = if (bodyLines.isNotEmpty()) {
+                        bodyLines.joinToString("\n") + "\n$subtitle"
+                    } else subtitle
+                    updateForegroundNotification(summaryTitle, contentText, bigText)
+                }
+                NotificationMode.PER_PROBLEM ->
+                    NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
+            }
 
             saveFingerprints(fingerprints)
             saveFailedInstances(failedIds)
@@ -259,7 +289,9 @@ class NagiosMonitoringService : Service() {
     // ── Notification helpers ──────────────────────────────────────────────────
 
     private fun buildPersistentNotification(
+        title: String = "qNag monitoring active",
         contentText: String = "Starting…",
+        bigText: String? = null,
     ): Notification {
         val tapIntent = PendingIntent.getActivity(
             this, 0,
@@ -270,22 +302,34 @@ class NagiosMonitoringService : Service() {
         )
         return NotificationCompat.Builder(this, NotificationHelper.CHANNEL_MONITORING)
             .setSmallIcon(android.R.drawable.ic_menu_recent_history)
-            .setContentTitle("qNag monitoring active")
+            .setContentTitle(title)
             .setContentText(contentText)
+            .apply {
+                if (bigText != null) setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
+            }
             .setContentIntent(tapIntent)
             .setOngoing(true)
             .setSilent(true)
             .build()
     }
 
-    /** Update the persistent foreground notification with new text (e.g. real interval). */
+    /**
+     * Update the persistent foreground notification.
+     *
+     * In SUMMARY_ONLY mode the title becomes the alert-summary title ("qNag: 3 critical, …"),
+     * the contentText shows instance count + interval, and bigText shows per-instance lines.
+     */
     @android.annotation.SuppressLint("MissingPermission")
-    private fun updateForegroundNotification(contentText: String) {
+    private fun updateForegroundNotification(
+        title: String = "qNag monitoring active",
+        contentText: String,
+        bigText: String? = null,
+    ) {
         try {
             NotificationManagerCompat.from(applicationContext)
                 .notify(
                     NotificationHelper.MONITORING_SERVICE_NOTIF_ID,
-                    buildPersistentNotification(contentText)
+                    buildPersistentNotification(title, contentText, bigText)
                 )
         } catch (_: Exception) {
         }

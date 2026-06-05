@@ -5,6 +5,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.exogroup.qnag.data.AckSuppressCache
 import com.exogroup.qnag.data.NagiosApi
+import com.exogroup.qnag.data.NotificationMode
 import com.exogroup.qnag.data.SecureInstanceStore
 import com.exogroup.qnag.data.applyFilters
 import com.exogroup.qnag.data.fetchFailureNotificationId
@@ -52,9 +53,9 @@ class NagiosPollingWorker(
         var failedInstanceIds = loadFailedInstances()
 
         val targets = instances.filter { it.enabled && it.notificationsEnabled }
-        // Accumulate all notifications across all instances so notifyBatch can
-        // apply cross-instance anti-flood grouping (e.g. "12 CRITICAL across 2 instances").
-        val toNotify = mutableListOf<ProblemToNotify>()
+        val toNotify = mutableListOf<ProblemToNotify>()          // new/changed — drives sound in all modes
+        val allCurrentProblems = mutableListOf<ProblemToNotify>() // all current — drives summary text
+        val failedInstanceNames = mutableListOf<String>()         // names of instances that failed
 
         for (instance in targets) {
             try {
@@ -75,10 +76,11 @@ class NagiosPollingWorker(
 
                 for (problem in filtered) {
                     if (!shouldNotify(problem, notifSettings)) continue
-                    // Skip problems recently ACKed from the UI — suppress re-notification until
-                    // Nagios confirms the ACK on the next successful fetch.
                     if (notifSettings.notifyOnlyUnacknowledged &&
                         AckSuppressCache.isSuppressed(applicationContext, instance.id, problem)) continue
+                    // All current problems for summary text
+                    allCurrentProblems += ProblemToNotify(instance.id, instance.name, problem)
+                    // New/changed problems for sound and PER_PROBLEM mode
                     val fp = problemFingerprint(instance.id, problem)
                     val isNew = fp !in knownForInstance
                     if (!cmdSettings.notifyOnlyNewProblems || isNew) {
@@ -86,23 +88,34 @@ class NagiosPollingWorker(
                     }
                 }
 
+                // Recovery: clear failure state
                 if (instance.id in failedInstanceIds) {
                     failedInstanceIds = failedInstanceIds - instance.id
-                    NotificationHelper.cancelFetchFailure(applicationContext, instance.id)
+                    if (notifSettings.notificationMode == NotificationMode.PER_PROBLEM) {
+                        NotificationHelper.cancelFetchFailure(applicationContext, instance.id)
+                    }
                 }
 
             } catch (e: Exception) {
-                // Never log the exception verbatim — it may contain credentials
                 val safeError = sanitizeError(e.message)
-                if (cmdSettings.notifyOnFetchFailure && instance.id !in failedInstanceIds) {
-                    NotificationHelper.notifyFetchFailure(applicationContext, instance.id, instance.name, safeError)
-                    failedInstanceIds = failedInstanceIds + instance.id
+                when (notifSettings.notificationMode) {
+                    NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
+                        failedInstanceNames += instance.name
+                    NotificationMode.PER_PROBLEM ->
+                        if (cmdSettings.notifyOnFetchFailure && instance.id !in failedInstanceIds) {
+                            NotificationHelper.notifyFetchFailure(applicationContext, instance.id, instance.name, safeError)
+                            failedInstanceIds = failedInstanceIds + instance.id
+                        }
                 }
             }
         }
 
-        // Post all notifications in one batch for cross-instance flood protection
-        NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
+        when (notifSettings.notificationMode) {
+            NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
+                NotificationHelper.notifySummary(applicationContext, toNotify, allCurrentProblems, failedInstanceNames, notifSettings)
+            NotificationMode.PER_PROBLEM ->
+                NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
+        }
 
         saveFingerprints(fingerprints)
         saveFailedInstances(failedInstanceIds)
