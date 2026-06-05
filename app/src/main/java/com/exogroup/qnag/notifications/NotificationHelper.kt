@@ -163,11 +163,15 @@ object NotificationHelper {
      * Cancel the alert-summary notification and reset persistent sound state.
      * After a cancel, the next alert will sound again even if severity hasn't increased.
      */
+    /**
+     * Cancel the ALERT_SUMMARY_NOTIF_ID notification only.
+     *
+     * Does NOT reset sound state — calling this on foreground-service startup/reload must
+     * not cause existing unchanged alerts to sound again.  Sound state is reset separately
+     * in [notifySummary] when alerts genuinely clear (all-green).
+     */
     fun cancelAlertSummary(context: Context) {
         NotificationManagerCompat.from(context).cancel(ALERT_SUMMARY_NOTIF_ID)
-        saveAlertSoundState(context, 0, false)
-        // Also reset AlertSoundController state so the next alert sounds immediately
-        com.exogroup.qnag.sound.AlertSoundController.resetState(context)
     }
 
     // ── Summary notification (SUMMARY_ONLY / GROUPED_DETAILS modes) ──────────
@@ -194,9 +198,12 @@ object NotificationHelper {
     ) {
         if (!hasPermission(context)) return
 
-        // All-clear: cancel the summary notification and reset sound state
+        // All-clear: cancel the summary notification AND reset sound state so the next
+        // new alert sounds immediately regardless of any remaining cooldown.
         if (allProblems.isEmpty() && failedInstances.isEmpty()) {
             cancelAlertSummary(context)
+            saveAlertSoundState(context, 0, false)
+            com.exogroup.qnag.sound.AlertSoundController.resetState(context)
             return
         }
 
@@ -265,11 +272,11 @@ object NotificationHelper {
         // foreground service use the same logic (fingerprint tracking, cooldown, etc.)
         if (isInAppMode) {
             com.exogroup.qnag.sound.AlertSoundController.evaluateAndPlay(
-                context             = context,
-                allCurrentProblems  = allProblems,
-                newProblems         = newProblems,
-                failedInstanceCount = failedInstances.size,
-                settings            = settings,
+                context              = context,
+                allCurrentProblems   = allProblems,
+                newProblems          = newProblems,
+                failedInstanceNames  = failedInstances,
+                settings             = settings,
             )
         }
     }

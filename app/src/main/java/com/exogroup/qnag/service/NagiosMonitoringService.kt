@@ -267,7 +267,7 @@ class NagiosMonitoringService : Service() {
                         context              = applicationContext,
                         allCurrentProblems   = allCurrentProblems,
                         newProblems          = toNotify,
-                        failedInstanceCount  = failedInstanceNames.size,
+                        failedInstanceNames  = failedInstanceNames,
                         settings             = notifSettings,
                         debug                = cmdSettings.debugCommandSubmission,
                     )
