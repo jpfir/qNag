@@ -111,6 +111,7 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                     o.get("nagiosDateFormat")?.takeIf { !it.isJsonNull }?.asString
                         ?.let { NagiosDateFormat.valueOf(it) }
                 } catch (_: Exception) { null },
+                ackServicesOnHostAck = o.get("ackServicesOnHostAck")?.asBoolean ?: true,
                 debugCommandSubmission = o.get("debugCommandSubmission")?.asBoolean ?: false,
             )
         } catch (_: Exception) { CommandSettings() }

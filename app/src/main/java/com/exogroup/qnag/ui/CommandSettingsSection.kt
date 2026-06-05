@@ -56,6 +56,15 @@ fun CommandSettingsSection(
         CmdRow("Sticky ACK", settings.ackSticky) { onUpdate(settings.copy(ackSticky = it)) }
         CmdRow("Notify on ACK", settings.ackNotify) { onUpdate(settings.copy(ackNotify = it)) }
         CmdRow("Persistent ACK comment", settings.ackPersistent) { onUpdate(settings.copy(ackPersistent = it)) }
+        CmdRow("When ACKing a host, also ACK service problems on that host", settings.ackServicesOnHostAck) {
+            onUpdate(settings.copy(ackServicesOnHostAck = it))
+        }
+        Text(
+            "Useful when a host is down and many services are failing because of it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
 
         Spacer(Modifier.height(4.dp))
         CmdSubheader("Background polling")

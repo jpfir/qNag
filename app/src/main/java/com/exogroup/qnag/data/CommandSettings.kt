@@ -25,6 +25,12 @@ data class CommandSettings(
     // resolvedDateFormat always returns a non-null value.
     val nagiosDateFormat: NagiosDateFormat? = null,
 
+    // ── ACK cascade ───────────────────────────────────────────────────────────
+    // When true, ACKing a host also ACKs all current unacknowledged service problems
+    // on the same host (same instance).  Useful when a host is down and many services
+    // are alerting because of it.
+    val ackServicesOnHostAck: Boolean = true,
+
     // ── Diagnostics ───────────────────────────────────────────────────────────
     // When true, logs safe command submission info (field names, HTTP status, sanitized
     // response snippet) to help diagnose recheck/ACK failures.

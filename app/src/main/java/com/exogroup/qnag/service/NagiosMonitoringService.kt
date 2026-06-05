@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.edit
 import com.exogroup.qnag.MainActivity
+import com.exogroup.qnag.data.AckSuppressCache
 import com.exogroup.qnag.data.NagiosApi
 import com.exogroup.qnag.data.SecureInstanceStore
 import com.exogroup.qnag.data.applyFilters
@@ -174,6 +175,9 @@ class NagiosMonitoringService : Service() {
             if (cmdSettings.debugCommandSubmission)
                 android.util.Log.d("qNag", "[service] poll starting: targets=${targets.size} interval=${effectiveIntervalS}s")
 
+            // Evict expired ACK-suppress entries before the poll cycle
+            AckSuppressCache.evictExpired(applicationContext)
+
             var fingerprints = loadFingerprints()
             var failedIds = loadFailedInstances()
             val toNotify = mutableListOf<ProblemToNotify>()
@@ -191,6 +195,8 @@ class NagiosMonitoringService : Service() {
 
                     for (problem in filtered) {
                         if (!shouldNotify(problem, notifSettings)) continue
+                        if (notifSettings.notifyOnlyUnacknowledged &&
+                            AckSuppressCache.isSuppressed(applicationContext, instance.id, problem)) continue
                         val fp = problemFingerprint(instance.id, problem)
                         val isNew = fp !in knownForInstance
                         if (!cmdSettings.notifyOnlyNewProblems || isNew) {

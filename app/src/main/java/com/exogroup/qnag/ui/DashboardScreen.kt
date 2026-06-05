@@ -317,11 +317,21 @@ private fun DashboardContent(
             }
 
             is DashboardState.Success -> {
+                // Warning banner for partial ALL-mode failures (some instances reachable, some not)
+                if (state.partialErrors.isNotEmpty()) {
+                    PartialErrorBanner(state.partialErrors)
+                    Spacer(Modifier.height(4.dp))
+                }
                 val visible = applyFiltersAndLocalAck(state.problems, filterSettings, isLocallyAcknowledged)
                 when {
-                    state.problems.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("All green! No active problems.", color = MaterialTheme.colorScheme.primary)
-                    }
+                    state.problems.isEmpty() && state.partialErrors.isEmpty() ->
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("All green! No active problems.", color = MaterialTheme.colorScheme.primary)
+                        }
+                    state.problems.isEmpty() ->
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No problems from reachable instances.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     visible.isEmpty() -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                         SummaryRow(visibleCount = 0, totalCount = state.problems.size, lastUpdated = state.lastUpdated, stale = false)
                         Spacer(Modifier.height(16.dp))
@@ -441,6 +451,32 @@ private fun SummaryRow(visibleCount: Int, totalCount: Int, lastUpdated: Long?, s
             else -> ""
         }
         if (timeText.isNotEmpty()) Text(timeText, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+/** Non-fatal banner shown when some (but not all) instances failed in ALL mode. */
+@Composable
+private fun PartialErrorBanner(errors: List<String>) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
+        ),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Text(
+                "Failed to refresh ${errors.size} instance${if (errors.size != 1) "s" else ""}:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            errors.forEach { msg ->
+                Text(
+                    "• $msg",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+            }
+        }
     }
 }
 

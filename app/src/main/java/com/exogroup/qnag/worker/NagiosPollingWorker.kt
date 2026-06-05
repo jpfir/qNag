@@ -3,6 +3,7 @@ package com.exogroup.qnag.worker
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.exogroup.qnag.data.AckSuppressCache
 import com.exogroup.qnag.data.NagiosApi
 import com.exogroup.qnag.data.SecureInstanceStore
 import com.exogroup.qnag.data.applyFilters
@@ -41,8 +42,10 @@ class NagiosPollingWorker(
         val notifSettings = settings.notificationSettings
         val cmdSettings = settings.commandSettings
 
-        // Skip entirely if global notifications are disabled
         if (!notifSettings.notificationsEnabled) return Result.success()
+
+        // Evict expired ACK-suppress entries before the poll cycle
+        AckSuppressCache.evictExpired(applicationContext)
 
         val api = NagiosApi()
         var fingerprints = loadFingerprints()
@@ -72,6 +75,10 @@ class NagiosPollingWorker(
 
                 for (problem in filtered) {
                     if (!shouldNotify(problem, notifSettings)) continue
+                    // Skip problems recently ACKed from the UI — suppress re-notification until
+                    // Nagios confirms the ACK on the next successful fetch.
+                    if (notifSettings.notifyOnlyUnacknowledged &&
+                        AckSuppressCache.isSuppressed(applicationContext, instance.id, problem)) continue
                     val fp = problemFingerprint(instance.id, problem)
                     val isNew = fp !in knownForInstance
                     if (!cmdSettings.notifyOnlyNewProblems || isNew) {
