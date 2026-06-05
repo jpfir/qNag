@@ -237,6 +237,93 @@ fun NotificationSettingsSection(
                         ) { Text("$label — manage sound") }
                     }
                 }
+
+                // ── In-app alert sound (Goals 2, 3, 4) ───────────────────────────────
+                Spacer(Modifier.height(8.dp))
+                NotifSubheader("In-app alert sound engine")
+                Text(
+                    "qNag can play alert sounds via its own audio engine, independent of " +
+                    "Android notification-channel settings.  This is more reliable for on-call use " +
+                    "because channel sound can be muted by the user or OS.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+
+                listOf(
+                    com.exogroup.qnag.data.AlertSoundMode.IN_APP_SOUND to "In-app sound (recommended)",
+                    com.exogroup.qnag.data.AlertSoundMode.IN_APP_SOUND_WITH_DND_HELP to "In-app sound + DND guidance",
+                    com.exogroup.qnag.data.AlertSoundMode.NOTIFICATION_CHANNEL_ONLY to "Notification channel only",
+                ).forEach { (mode, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onUpdate(settings.copy(alertSoundMode = mode)) }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = settings.alertSoundMode == mode,
+                            onClick = { onUpdate(settings.copy(alertSoundMode = mode)) },
+                        )
+                        Text(label, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                AnimatedVisibility(settings.alertSoundMode != com.exogroup.qnag.data.AlertSoundMode.NOTIFICATION_CHANNEL_ONLY) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Spacer(Modifier.height(4.dp))
+                        NotifRow("Sound even in vibrate mode (uses alarm stream)", settings.playSoundInVibrateMode) {
+                            onUpdate(settings.copy(playSoundInVibrateMode = it))
+                        }
+                        NotifRow("Use alarm audio stream (bypasses ringer mode)", settings.useAlarmAudioStream) {
+                            onUpdate(settings.copy(useAlarmAudioStream = it))
+                        }
+                        Text(
+                            "qNag volume is controlled by system alarm volume. Android DND and " +
+                            "OEM restrictions may still affect playback on some devices.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                // ── DND guidance ──────────────────────────────────────────────────────
+                AnimatedVisibility(settings.alertSoundMode == com.exogroup.qnag.data.AlertSoundMode.IN_APP_SOUND_WITH_DND_HELP) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Spacer(Modifier.height(4.dp))
+                        NotifSubheader("Do Not Disturb guidance")
+                        val dndGranted = remember {
+                            val nm = context.getSystemService(android.app.NotificationManager::class.java)
+                            nm?.isNotificationPolicyAccessGranted == true
+                        }
+                        if (dndGranted) {
+                            Text(
+                                "DND policy access is granted. qNag can set channels to bypass DND.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = com.exogroup.qnag.ui.okGreenColor(),
+                            )
+                        } else {
+                            Text(
+                                "DND policy access is not granted. Grant it so qNag-controlled " +
+                                "sounds can bypass Do Not Disturb when needed.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            OutlinedButton(
+                                onClick = {
+                                    context.startActivity(
+                                        Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("Grant DND access") }
+                        }
+                        NotifRow("Help bypass Do Not Disturb", settings.helpBypassDnd) {
+                            onUpdate(settings.copy(helpBypassDnd = it))
+                        }
+                    }
+                }
             }
         }
     }
@@ -271,3 +358,7 @@ private fun NotifRow(
         )
     }
 }
+
+// Shared helper — used by NotificationSettingsSection and MonitoringHealthSection
+@androidx.compose.runtime.Composable
+fun okGreenColor() = androidx.compose.ui.graphics.Color(0xFF2E7D32)

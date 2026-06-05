@@ -22,14 +22,20 @@ private val FOREGROUND_INTERVALS: List<Pair<Int, String>> = listOf(
 /**
  * ACK defaults, polling behaviour flags, and miscellaneous command settings.
  * All changes are emitted immediately via [onUpdate].
+ *
+ * @param showOnlyReliability When true, show only reliability/monitoring settings
+ *   (used by the "Monitoring & Reliability" sub-screen in the settings navigation).
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CommandSettingsSection(
     settings: CommandSettings,
     onUpdate: (CommandSettings) -> Unit,
+    showOnlyReliability: Boolean = false,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
 
+        if (!showOnlyReliability) {
         // ── ACK defaults ───────────────────────────────────────────────────
         CmdSubheader("Default ACK settings")
 
@@ -78,6 +84,8 @@ fun CommandSettingsSection(
         CmdRow("Show battery optimization hint", settings.showBatteryOptimizationHint) {
             onUpdate(settings.copy(showBatteryOptimizationHint = it))
         }
+
+        } // end if (!showOnlyReliability)
 
         Spacer(Modifier.height(4.dp))
         CmdSubheader("Reliability mode")

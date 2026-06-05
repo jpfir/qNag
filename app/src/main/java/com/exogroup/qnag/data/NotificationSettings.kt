@@ -33,4 +33,17 @@ data class NotificationSettings(
     // SUMMARY_ONLY (default): one compact summary notification updated in place.
     // PER_PROBLEM: one notification per problem (legacy / noisy).
     val notificationMode: NotificationMode = NotificationMode.SUMMARY_ONLY,
+
+    // ── In-app alert sound engine ─────────────────────────────────────────────
+    // Governs how qNag produces sound when alert state worsens.
+    val alertSoundMode: AlertSoundMode = AlertSoundMode.IN_APP_SOUND,
+    // When true, uses USAGE_ALARM AudioAttributes so sound plays even in vibrate mode.
+    val playSoundInVibrateMode: Boolean = true,
+    // When true, uses the ALARM audio stream which bypasses ringer mode.
+    val useAlarmAudioStream: Boolean = true,
+    // URI of the alert ringtone/alarm.  null = system default alarm sound.
+    // Persisted as a string; the app must hold a persistable URI permission.
+    val inAppSoundUri: String? = null,
+    // When true, show DND-access setup guidance in health section.
+    val helpBypassDnd: Boolean = false,
 )

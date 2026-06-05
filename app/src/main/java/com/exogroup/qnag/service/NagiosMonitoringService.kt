@@ -14,6 +14,8 @@ import androidx.core.content.edit
 import com.exogroup.qnag.MainActivity
 import com.exogroup.qnag.data.AckSuppressCache
 import com.exogroup.qnag.data.MonitoringHealth
+import com.exogroup.qnag.sound.AlertSoundPlayer
+import com.exogroup.qnag.sound.shouldPlayAlertSound
 import com.exogroup.qnag.data.NagiosApi
 import com.exogroup.qnag.data.NotificationMode
 import com.exogroup.qnag.data.SecureInstanceStore
@@ -99,6 +101,9 @@ class NagiosMonitoringService : Service() {
         // Foreground service is active — cancel WorkManager to avoid double notifications
         BackgroundPollingScheduler.cancel(applicationContext)
         MonitoringHealth.recordServiceStart(applicationContext)
+        // Cancel any lingering background alert-summary notification — in foreground mode
+        // the ONE foreground notification carries both monitoring status and alert summary.
+        NotificationHelper.cancelAlertSummary(applicationContext)
 
         // Always cancel + restart the polling job.  This acts as a reload: interval changes,
         // instance list changes, and repeated start() calls all take effect immediately.
@@ -241,14 +246,44 @@ class NagiosMonitoringService : Service() {
                 }
             }
 
-            // ── Dual-notification dispatch (Goal 2) ──────────────────────────────
-            // Foreground notification stays QUIET (just monitoring status).
-            // Alert summary notification is AUDIBLE (separate, sounds on new/worse state).
+            // ── One-notification dispatch ─────────────────────────────────────────
+            // In foreground/reliability mode there is EXACTLY ONE qNag notification:
+            // the foreground notification itself, updated in-place with the alert summary.
+            // Sound is produced by AlertSoundPlayer (in-app, independent of channel settings).
             when (notifSettings.notificationMode) {
-                NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
-                    NotificationHelper.notifySummary(
-                        applicationContext, toNotify, allCurrentProblems, failedInstanceNames, notifSettings
+                NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS -> {
+                    val (summaryTitle, bodyLines) = NotificationHelper.buildSummaryContent(
+                        allCurrentProblems, failedInstanceNames
                     )
+                    val subtitle = "checking every ${effectiveIntervalS}s"
+                    val contentText = "${targets.size} instance${if (targets.size != 1) "s" else ""} · $subtitle"
+                    val bigText = if (bodyLines.isNotEmpty())
+                        bodyLines.joinToString("\n") + "\n$subtitle"
+                    else subtitle
+                    updateForegroundNotification(summaryTitle, contentText, bigText)
+
+                    // In-app alert sound — plays when state worsens, independent of channel sound
+                    val (prevSeverity, lastSoundMs) = NotificationHelper.loadAlertSoundState(applicationContext)
+                    val hostDown = allCurrentProblems.count { it.problem is com.exogroup.qnag.data.NagiosProblem.HostProblem && it.problem.status == com.exogroup.qnag.data.NagiosStatus.HOST_DOWN }
+                    val svcCrit  = allCurrentProblems.count { it.problem is com.exogroup.qnag.data.NagiosProblem.ServiceProblem && it.problem.status == com.exogroup.qnag.data.NagiosStatus.SERVICE_CRITICAL }
+                    val currentSeverity = when {
+                        hostDown > 0 -> 5
+                        svcCrit > 0  -> 4
+                        allCurrentProblems.any { it.problem is com.exogroup.qnag.data.NagiosProblem.HostProblem } -> 3
+                        allCurrentProblems.any { it.problem is com.exogroup.qnag.data.NagiosProblem.ServiceProblem && it.problem.status == com.exogroup.qnag.data.NagiosStatus.SERVICE_WARNING } -> 2
+                        allCurrentProblems.isNotEmpty() -> 1
+                        else -> 0
+                    }
+                    val playSound = shouldPlayAlertSound(
+                        hasNewProblems = toNotify.isNotEmpty(),
+                        currentWorstSeverity = currentSeverity,
+                        prevWorstSeverity = prevSeverity,
+                        lastSoundMs = lastSoundMs,
+                        settings = notifSettings,
+                    )
+                    AlertSoundPlayer.playIfNeeded(applicationContext, playSound, notifSettings)
+                    NotificationHelper.saveAlertSoundState(applicationContext, currentSeverity, playSound)
+                }
                 NotificationMode.PER_PROBLEM ->
                     NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
             }

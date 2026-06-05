@@ -141,6 +141,14 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                     o.get("notificationMode")?.takeIf { !it.isJsonNull }?.asString
                         ?.let { NotificationMode.valueOf(it) }
                 } catch (_: Exception) { null } ?: NotificationMode.SUMMARY_ONLY,
+                alertSoundMode = try {
+                    o.get("alertSoundMode")?.takeIf { !it.isJsonNull }?.asString
+                        ?.let { AlertSoundMode.valueOf(it) }
+                } catch (_: Exception) { null } ?: AlertSoundMode.IN_APP_SOUND,
+                playSoundInVibrateMode = o.get("playSoundInVibrateMode")?.asBoolean ?: true,
+                useAlarmAudioStream = o.get("useAlarmAudioStream")?.asBoolean ?: true,
+                inAppSoundUri = o.get("inAppSoundUri")?.takeIf { !it.isJsonNull }?.asString,
+                helpBypassDnd = o.get("helpBypassDnd")?.asBoolean ?: false,
             )
         } catch (_: Exception) { NotificationSettings() }
     }

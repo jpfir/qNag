@@ -298,12 +298,12 @@ object NotificationHelper {
     // ── Persistent alert sound state (Goal 3) ────────────────────────────────
     // Stored in plain SharedPreferences — no secrets, just timestamps and integers.
 
-    private fun loadAlertSoundState(context: Context): Pair<Int, Long> {
+    fun loadAlertSoundState(context: Context): Pair<Int, Long> {
         val p = context.getSharedPreferences(ALERT_SOUND_PREFS, Context.MODE_PRIVATE)
         return p.getInt("worst_severity", 0) to p.getLong("last_sound_ms", 0L)
     }
 
-    private fun saveAlertSoundState(context: Context, worstSeverity: Int, soundPlayed: Boolean) {
+    fun saveAlertSoundState(context: Context, worstSeverity: Int, soundPlayed: Boolean) {
         context.getSharedPreferences(ALERT_SOUND_PREFS, Context.MODE_PRIVATE).edit().apply {
             putInt("worst_severity", worstSeverity)
             if (soundPlayed) putLong("last_sound_ms", System.currentTimeMillis())
