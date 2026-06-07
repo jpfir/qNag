@@ -75,6 +75,14 @@ class NagiosApi {
                     hostAcknowledged = d.optBooleanSafe("host_problem_has_been_acknowledged") ||
                             d.optBooleanSafe("host_acknowledged"),
                     hostScheduledDowntimeDepth = d.optInt("host_scheduled_downtime_depth", 0),
+                    // Check timing metadata (optional — Nagios may not return all fields)
+                    lastCheck          = d.optEpochMs("last_check"),
+                    nextCheck          = d.optEpochMs("next_check"),
+                    lastStateChange    = d.optEpochMs("last_state_change"),
+                    lastHardStateChange = d.optEpochMs("last_hard_state_change"),
+                    currentAttempt     = d.optInt("current_attempt", 0).takeIf { it > 0 },
+                    maxAttempts        = d.optInt("max_check_attempts", 0).takeIf { it > 0 },
+                    checkType          = d.optCheckType("check_type"),
                 )
             }
         }
@@ -110,6 +118,14 @@ class NagiosApi {
                 scheduledDowntimeDepth = d.optInt("scheduled_downtime_depth", 0),
                 isFlapping = d.optBooleanSafe("is_flapping"),
                 isSoftState = parseSoftState(d, "state_type"),
+                // Check timing metadata
+                lastCheck          = d.optEpochMs("last_check"),
+                nextCheck          = d.optEpochMs("next_check"),
+                lastStateChange    = d.optEpochMs("last_state_change"),
+                lastHardStateChange = d.optEpochMs("last_hard_state_change"),
+                currentAttempt     = d.optInt("current_attempt", 0).takeIf { it > 0 },
+                maxAttempts        = d.optInt("max_check_attempts", 0).takeIf { it > 0 },
+                checkType          = d.optCheckType("check_type"),
             )
         }
         return result
@@ -338,6 +354,34 @@ class NagiosApi {
         text.take(300)
             .replace(Regex("https?://[^/\\s]*@[^/\\s]*"), "[redacted-url]")
             .replace(Regex("\\s+"), " ")
+
+    /**
+     * Parse a Nagios timestamp field to epoch milliseconds.
+     *
+     * Nagios statusjson returns timestamps as epoch seconds (10-digit) or occasionally millis
+     * (13-digit).  Handles Int, Long, Double, and numeric String values gracefully.
+     * Returns null for missing, zero, or unparseable values.
+     */
+    private fun JSONObject.optEpochMs(key: String): Long? {
+        val raw = opt(key) ?: return null
+        val num: Long = when (raw) {
+            is Int    -> raw.toLong()
+            is Long   -> raw
+            is Double -> raw.toLong()
+            is String -> raw.toLongOrNull() ?: return null
+            else      -> return null
+        }
+        if (num <= 0) return null
+        // 10-digit = epoch seconds; threshold ~year 2286 as seconds
+        return if (num < 10_000_000_000L) num * 1000L else num
+    }
+
+    /** Parse check_type field: 0 = active, 1 = passive. */
+    private fun JSONObject.optCheckType(key: String): String? = when (optInt(key, -1)) {
+        0 -> "active"
+        1 -> "passive"
+        else -> null
+    }
 
     private fun parseSoftState(obj: JSONObject, key: String): Boolean {
         val raw = obj.opt(key) ?: return false

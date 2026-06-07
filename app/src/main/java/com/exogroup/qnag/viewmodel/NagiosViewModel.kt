@@ -99,6 +99,7 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 val problems = withContext(Dispatchers.IO) { api.fetchProblems(instance) }
                 val now = System.currentTimeMillis()
                 reconcileLocalAck(instance.id, problems)
+                reconcilePendingRechecks(instance.id, problems)
                 val summary = buildInstanceSummary(instance, problems, now)
                 uiState = DashboardState.Success(problems, now, instanceSummaries = listOf(summary))
             } catch (e: CancellationException) {
@@ -152,6 +153,8 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
 
                 reconcileLocalAckAll(allProblems)
 
+                reconcilePendingRechecksAll(allProblems)
+
                 if (allProblems.isEmpty() && errors.size == instances.size) {
                     uiState = DashboardState.Error(
                         "Failed to refresh all instances. ${errors.firstOrNull() ?: ""}",
@@ -166,6 +169,15 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
             } catch (e: Exception) {
                 uiState = DashboardState.Error(e.message ?: "Unknown network error", stale, staleSummaries)
             }
+        }
+    }
+
+    /** Refresh using previous target with skipIfRunning=true — used for delayed post-recheck refreshes. */
+    private fun refreshAfterCommandDelayed() {
+        when (val target = lastFetchTarget) {
+            is FetchTarget.Single -> fetchAlerts(target.instance, skipIfRunning = true)
+            is FetchTarget.All -> fetchAlertsForAll(target.instances, skipIfRunning = true)
+            null -> Unit
         }
     }
 
@@ -366,8 +378,14 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 withContext(Dispatchers.IO) { api.recheckProblems(instance, fresh, settings) }
                 recordCompleted("recheck", instance.id, fresh)
+                // Mark as pending so the card shows "Recheck pending" until Nagios runs the check
+                val submittedAt = System.currentTimeMillis()
+                fresh.forEach { pendingRecheckMap[recheckPendingKey(instance.id, it)] = submittedAt }
                 commandState = CommandState.Success(recheckMsg(fresh.size))
                 refreshAfterCommand()
+                // Delayed refreshes to catch Nagios after it executes the forced check (Goal 5)
+                viewModelScope.launch { kotlinx.coroutines.delay(3_000L); refreshAfterCommandDelayed() }
+                viewModelScope.launch { kotlinx.coroutines.delay(8_000L); refreshAfterCommandDelayed() }
             } catch (e: Exception) {
                 commandState = CommandState.Error(e.message ?: "Recheck failed")
             } finally {
@@ -406,14 +424,64 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
                 grouped.forEach { (id, group) -> recordCompleted("recheck", id, group) }
+                val submittedAt = System.currentTimeMillis()
+                fresh.forEach { pendingRecheckMap[recheckPendingKey(it.instanceId, it)] = submittedAt }
                 commandState = CommandState.Success(recheckMsg(fresh.size))
                 refreshAfterCommand()
+                viewModelScope.launch { kotlinx.coroutines.delay(3_000L); refreshAfterCommandDelayed() }
+                viewModelScope.launch { kotlinx.coroutines.delay(8_000L); refreshAfterCommandDelayed() }
             } catch (e: Exception) {
                 commandState = CommandState.Error(e.message ?: "Recheck failed")
             } finally {
                 deactivateKeys(activeKeys)
             }
         }
+    }
+
+    // ── Pending recheck overlay (Goal 4) ─────────────────────────────────────
+    //
+    // Tracks problems for which a forced recheck was submitted but Nagios has not yet
+    // executed the check (lastCheck < submittedAt).  While pending, ProblemCard shows
+    // "Recheck pending — waiting for fresh result".
+    // The map is keyed by instanceId + SEP + uniqueId → submittedAtMillis.
+
+    private val pendingRecheckMap = mutableStateMapOf<String, Long>()
+
+    fun isRecheckPending(instanceId: String, problem: NagiosProblem): Boolean {
+        val ts = pendingRecheckMap[recheckPendingKey(instanceId, problem)] ?: return false
+        return (System.currentTimeMillis() - ts) < RECHECK_TTL_MS
+    }
+
+    private fun recheckPendingKey(instanceId: String, problem: NagiosProblem): String =
+        "$instanceId$SEP${problem.uniqueId}"
+
+    /** Remove pending recheck entries whose lastCheck is now >= submittedAt (check ran). */
+    private fun reconcilePendingRechecks(instanceId: String, serverProblems: List<NagiosProblem>) {
+        val now = System.currentTimeMillis()
+        val prefix = "$instanceId$SEP"
+        val toRemove = pendingRecheckMap.keys.toList().filter { key ->
+            if (!key.startsWith(prefix)) return@filter false
+            val ts = pendingRecheckMap[key] ?: return@filter true
+            if ((now - ts) > RECHECK_TTL_MS) return@filter true
+            val uniqueId = key.removePrefix(prefix)
+            val problem = serverProblems.find { it.uniqueId == uniqueId } ?: return@filter false
+            // Clear when Nagios lastCheck is at or after submission (5 s tolerance)
+            (problem.lastCheck ?: 0L) >= (ts - 5_000L)
+        }
+        toRemove.forEach { pendingRecheckMap.remove(it) }
+    }
+
+    /** All-mode variant: reconcile across all instances in the merged list. */
+    private fun reconcilePendingRechecksAll(serverProblems: List<NagiosProblem>) {
+        val now = System.currentTimeMillis()
+        val toRemove = pendingRecheckMap.keys.toList().filter { key ->
+            val ts = pendingRecheckMap[key] ?: return@filter true
+            if ((now - ts) > RECHECK_TTL_MS) return@filter true
+            val problem = serverProblems.find { recheckPendingKey(it.instanceId, it) == key }
+                ?: return@filter false
+            (problem.lastCheck ?: 0L) >= (ts - 5_000L)
+        }
+        toRemove.forEach { pendingRecheckMap.remove(it) }
     }
 
     // ── Local ACK overlay ─────────────────────────────────────────────────────
@@ -546,6 +614,7 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
 
     companion object {
         private const val LOCAL_ACK_TTL_MS = 5 * 60 * 1_000L
+        private const val RECHECK_TTL_MS = 5 * 60 * 1_000L    // pending recheck expires after 5 min
         private const val COMMAND_COOLDOWN_MS = 5_000L
         // U+001F (unit separator): cannot appear in UUIDs or Nagios host/service names,
         // preventing false prefix matches in key lookups.

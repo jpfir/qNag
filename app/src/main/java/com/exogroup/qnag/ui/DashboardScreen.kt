@@ -123,6 +123,14 @@ fun DashboardScreen(
         nagiosViewModel.isLocallyAcknowledged(instId, p)
     }
 
+    // Lambda that checks pending-recheck state — shows "Recheck pending" chip on cards
+    val isRecheckPendingFn: (NagiosProblem) -> Boolean = { p ->
+        val instId = p.instanceId.ifEmpty {
+            (selectedInstance as? InstanceSelection.Single)?.instance?.id ?: instance.id
+        }
+        nagiosViewModel.isRecheckPending(instId, p)
+    }
+
     // Reactive visible problems (also applies local-ACK filter when hideAcknowledged=true)
     val visibleProblems by remember(filterSettings) {
         derivedStateOf {
@@ -259,6 +267,7 @@ fun DashboardScreen(
             enabledInstances = enabledInstances,
             onSelectInstance = onSwitchToInstance,
             isLocallyAcknowledged = isLocallyAcked,
+            isRecheckPending = isRecheckPendingFn,
             problemKey = problemKey,
             onToggleSelect = { key -> selectedIds = if (selectedIds.contains(key)) selectedIds - key else selectedIds + key },
             onLongPress = { key -> selectedIds = selectedIds + key },
@@ -293,6 +302,7 @@ private fun DashboardContent(
     enabledInstances: List<NagiosInstance>,
     onSelectInstance: (NagiosInstance) -> Unit,
     isLocallyAcknowledged: (NagiosProblem) -> Boolean,
+    isRecheckPending: (NagiosProblem) -> Boolean = { false },
     problemKey: (NagiosProblem) -> String,
     onToggleSelect: (String) -> Unit,
     onLongPress: (String) -> Unit,
@@ -328,6 +338,7 @@ private fun DashboardContent(
                     val visible = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
                     ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
+                        isRecheckPending = isRecheckPending,
                         problemKey = problemKey, onToggleSelect = onToggleSelect, onLongPress = onLongPress,
                         onAck = onAck, onRecheck = onRecheck,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
@@ -343,6 +354,7 @@ private fun DashboardContent(
                     val visible = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
                     ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
+                        isRecheckPending = isRecheckPending,
                         problemKey = problemKey, onToggleSelect = onToggleSelect, onLongPress = onLongPress,
                         onAck = onAck, onRecheck = onRecheck,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
@@ -398,6 +410,7 @@ private fun ProblemList(
     isSelectionMode: Boolean,
     showInstanceNames: Boolean,
     isLocallyAcknowledged: (NagiosProblem) -> Boolean,
+    isRecheckPending: (NagiosProblem) -> Boolean = { false },
     problemKey: (NagiosProblem) -> String,
     onToggleSelect: (String) -> Unit,
     onLongPress: (String) -> Unit,
@@ -424,6 +437,7 @@ private fun ProblemList(
                     isAcknowledged = problem.acknowledged || locallyAcked,
                     isPendingAck = locallyAcked && !problem.acknowledged,
                     instanceName = if (showInstanceNames) problem.instanceName else "",
+                    isRecheckPending = isRecheckPending(problem),
                     onToggleSelect = { onToggleSelect(key) },
                     onLongPress = { onLongPress(key) },
                     onAck = { onAck(key) },

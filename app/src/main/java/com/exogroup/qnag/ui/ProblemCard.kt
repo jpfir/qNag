@@ -22,6 +22,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -34,6 +37,8 @@ fun ProblemCard(
     isPendingAck: Boolean = false,
     // Non-empty in ALL-instances view — shows a small badge indicating the source instance
     instanceName: String = "",
+    // True while a recheck was submitted but Nagios has not yet executed the forced check
+    isRecheckPending: Boolean = false,
     onToggleSelect: () -> Unit,
     onLongPress: () -> Unit,
     onAck: () -> Unit,
@@ -120,6 +125,7 @@ fun ProblemCard(
                     isAcknowledged = isAcknowledged,
                     isPendingAck = isPendingAck,
                     instanceName = instanceName,
+                    isRecheckPending = isRecheckPending,
                 )
             }
         }
@@ -133,6 +139,7 @@ private fun ProblemCardContent(
     isAcknowledged: Boolean,
     isPendingAck: Boolean,
     instanceName: String = "",
+    isRecheckPending: Boolean = false,
 ) {
     Column(modifier = Modifier.padding(12.dp)) {
         // ── Name block — instance chip floats to top-right so names use full width ──
@@ -188,6 +195,32 @@ private fun ProblemCardContent(
             }
         }
 
+        // ── Check timing line (Goal 2 & 3) ───────────────────────────────────
+        val lastCheckMs = problem.lastCheck
+        if (isRecheckPending) {
+            Spacer(Modifier.height(3.dp))
+            Text(
+                "⏳ Recheck pending — waiting for fresh result",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+        } else if (lastCheckMs != null) {
+            val ageMs = System.currentTimeMillis() - lastCheckMs
+            val isStale = ageMs > STALE_CHECK_THRESHOLD_MS
+            Spacer(Modifier.height(3.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Checked ${checkAge(ageMs)} · ${checkTime(lastCheckMs)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (isStale) StaleBadge()
+            }
+        }
+
         // ── Plugin output ─────────────────────────────────────────────────────
         Spacer(Modifier.height(4.dp))
         SelectionContainer {
@@ -198,6 +231,70 @@ private fun ProblemCardContent(
                 overflow = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
             )
         }
+
+        // ── Expanded check metadata (Goal 2) ─────────────────────────────────
+        if (isExpanded) {
+            val hasMetadata = problem.lastCheck != null || problem.nextCheck != null ||
+                problem.lastStateChange != null || problem.currentAttempt != null || problem.checkType != null
+            if (hasMetadata) {
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Spacer(Modifier.height(6.dp))
+                CheckMetadataSection(problem)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CheckMetadataSection(problem: NagiosProblem) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        problem.lastCheck?.let { ts ->
+            CheckDetailRow("Last check", "${checkTime(ts)}  (${checkAge(System.currentTimeMillis() - ts)})")
+        }
+        problem.nextCheck?.let { ts ->
+            val inFuture = ts > System.currentTimeMillis()
+            CheckDetailRow("Next check", if (inFuture) "in ${checkAge(ts - System.currentTimeMillis())}" else checkTime(ts))
+        }
+        problem.lastStateChange?.let { ts ->
+            CheckDetailRow("State since", checkDuration(System.currentTimeMillis() - ts))
+        }
+        val attempt = problem.currentAttempt
+        val maxAtt  = problem.maxAttempts
+        if (attempt != null) {
+            val stateLabel = if (problem.isSoftState) "SOFT" else "HARD"
+            CheckDetailRow("Attempt", if (maxAtt != null) "$attempt/$maxAtt  $stateLabel" else "$attempt  $stateLabel")
+        }
+        problem.checkType?.let { CheckDetailRow("Check type", it) }
+    }
+}
+
+@Composable
+private fun CheckDetailRow(label: String, value: String) {
+    Row {
+        Text(
+            "$label:",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(88.dp),
+        )
+        Text(value, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+@Composable
+private fun StaleBadge() {
+    Surface(
+        shape = RoundedCornerShape(4.dp),
+        color = Color(0xFFF9A825).copy(alpha = 0.18f),
+        contentColor = Color(0xFFB36B00),
+    ) {
+        Text(
+            "STALE",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+        )
     }
 }
 
@@ -273,6 +370,30 @@ private fun hostColors(status: Int, dark: Boolean): Pair<Color, Color> = when (s
     else ->
         if (dark) Color(0xFF333333) to Color(0xFFBDBDBD)
         else Color(0xFFE2E3E5) to Color(0xFF383D41)
+}
+
+// Check is considered stale after 15 minutes without a Nagios re-check
+private const val STALE_CHECK_THRESHOLD_MS = 15 * 60 * 1_000L
+
+private fun checkTime(epochMs: Long): String =
+    SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(epochMs))
+
+private fun checkAge(ageMs: Long): String {
+    val sec = ageMs / 1000
+    return when {
+        sec < 60   -> "${sec}s ago"
+        sec < 3600 -> "${sec / 60}m ago"
+        else       -> "${sec / 3600}h ${(sec % 3600) / 60}m ago"
+    }
+}
+
+private fun checkDuration(durationMs: Long): String {
+    val sec = durationMs / 1000
+    return when {
+        sec < 60   -> "${sec}s"
+        sec < 3600 -> "${sec / 60}m"
+        else       -> "${sec / 3600}h ${(sec % 3600) / 60}m"
+    }
 }
 
 fun serviceStatusLabel(status: Int): String = when (status) {

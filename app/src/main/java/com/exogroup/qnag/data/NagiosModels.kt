@@ -45,6 +45,18 @@ sealed class NagiosProblem {
     open val instanceId: String get() = ""
     open val instanceName: String get() = ""
 
+    // ── Nagios check timing metadata ──────────────────────────────────────────
+    // Parsed from statusjson.cgi where available; null when Nagios does not return the field.
+    // All epoch timestamps are in milliseconds.
+    open val lastCheck: Long? get() = null
+    open val nextCheck: Long? get() = null
+    open val lastStateChange: Long? get() = null
+    open val lastHardStateChange: Long? get() = null
+    open val currentAttempt: Int? get() = null
+    open val maxAttempts: Int? get() = null
+    /** "active" or "passive" — null when not returned by Nagios. */
+    open val checkType: String? get() = null
+
     data class ServiceProblem(
         override val hostName: String,
         val serviceName: String,
@@ -62,6 +74,14 @@ sealed class NagiosProblem {
         val hostScheduledDowntimeDepth: Int = 0,
         override val instanceId: String = "",
         override val instanceName: String = "",
+        // Check timing
+        override val lastCheck: Long? = null,
+        override val nextCheck: Long? = null,
+        override val lastStateChange: Long? = null,
+        override val lastHardStateChange: Long? = null,
+        override val currentAttempt: Int? = null,
+        override val maxAttempts: Int? = null,
+        override val checkType: String? = null,
     ) : NagiosProblem() {
         override val uniqueId: String get() = "service|$hostName|$serviceName"
     }
@@ -78,6 +98,14 @@ sealed class NagiosProblem {
         override val isSoftState: Boolean = false,
         override val instanceId: String = "",
         override val instanceName: String = "",
+        // Check timing
+        override val lastCheck: Long? = null,
+        override val nextCheck: Long? = null,
+        override val lastStateChange: Long? = null,
+        override val lastHardStateChange: Long? = null,
+        override val currentAttempt: Int? = null,
+        override val maxAttempts: Int? = null,
+        override val checkType: String? = null,
     ) : NagiosProblem() {
         override val uniqueId: String get() = "host|$hostName"
     }
