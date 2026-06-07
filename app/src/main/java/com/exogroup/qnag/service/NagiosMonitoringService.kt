@@ -29,6 +29,7 @@ import com.exogroup.qnag.notifications.NotificationIconHelper
 import com.exogroup.qnag.notifications.NotificationVisualState
 import com.exogroup.qnag.notifications.deriveVisualStateFromProblems
 import com.exogroup.qnag.notifications.visualStateColor
+import com.exogroup.qnag.data.EventLog
 import com.exogroup.qnag.notifications.ProblemToNotify
 import com.exogroup.qnag.reliability.ExactAlarmWatchdogScheduler
 import com.exogroup.qnag.worker.BackgroundPollingScheduler
@@ -75,6 +76,7 @@ class NagiosMonitoringService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        EventLog.info(applicationContext, EventLog.CAT_APP, "Foreground monitoring service created")
         // Channels must exist before startForeground() is called.
         NotificationHelper.createChannels(this)
         startForeground(
@@ -128,6 +130,7 @@ class NagiosMonitoringService : Service() {
         // instance list changes, and repeated start() calls all take effect immediately.
         pollingJob?.cancel()
         pollingJob = serviceScope.launch { pollingLoop() }
+        EventLog.info(applicationContext, EventLog.CAT_APP, "Foreground service started — interval ${cmdSettings.foregroundPollingIntervalSeconds.coerceAtLeast(30)}s")
 
         // START_STICKY: ask Android to restart the service if killed (best-effort).
         // onDestroy schedules WorkManager fallback so monitoring survives even if restart fails.
@@ -144,6 +147,7 @@ class NagiosMonitoringService : Service() {
         if (!settings.commandSettings.keepMonitoringActive) {
             // User disabled reliability mode → cancel watchdog, use normal WorkManager scheduling
             MonitoringHealth.recordServiceStop(applicationContext, "user_disabled")
+            EventLog.info(applicationContext, EventLog.CAT_APP, "Foreground service stopped — Reliability Mode disabled by user")
             if (debug) android.util.Log.d("qNag", "[service] destroyed: scheduling WorkManager (reliability mode off)")
             ExactAlarmWatchdogScheduler.cancel(applicationContext)
             BackgroundPollingScheduler.scheduleOrCancel(applicationContext, settings, instances)
@@ -152,6 +156,7 @@ class NagiosMonitoringService : Service() {
             // Keep the watchdog active so it can attempt recovery, and schedule WorkManager
             // as additional fallback while START_STICKY restart is pending.
             MonitoringHealth.recordServiceStop(applicationContext, "killed_by_os")
+            EventLog.warn(applicationContext, EventLog.CAT_APP, "Foreground service destroyed by OS — Reliability Mode still ON; WorkManager fallback scheduled")
             if (debug) android.util.Log.d("qNag", "[service] destroyed: scheduling WorkManager fallback (reliability mode still on)")
             BackgroundPollingScheduler.scheduleFallback(applicationContext, settings, instances)
             ExactAlarmWatchdogScheduler.schedule(applicationContext, settings)
@@ -252,6 +257,8 @@ class NagiosMonitoringService : Service() {
                     }
 
                     MonitoringHealth.recordPollSuccess(applicationContext)
+                    EventLog.info(applicationContext, EventLog.CAT_POLLING,
+                        "Poll success — ${instance.name}: ${problems.size} problem(s)")
 
                     if (instance.id in failedIds) {
                         failedIds = failedIds - instance.id
@@ -262,6 +269,8 @@ class NagiosMonitoringService : Service() {
 
                 } catch (e: Exception) {
                     val safeError = sanitizeError(e.message)
+                    EventLog.error(applicationContext, EventLog.CAT_POLLING,
+                        "Poll failed — ${instance.name}: $safeError")
                     when (notifSettings.notificationMode) {
                         NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS -> Unit
                         NotificationMode.PER_PROBLEM ->

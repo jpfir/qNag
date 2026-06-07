@@ -10,6 +10,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.exogroup.qnag.data.AckSuppressCache
 import com.exogroup.qnag.data.CommandSettings
+import com.exogroup.qnag.data.EventLog
 import com.exogroup.qnag.data.DowntimeScope
 import com.exogroup.qnag.data.InstanceSummary
 import com.exogroup.qnag.data.NagiosApi
@@ -308,9 +309,13 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                     fresh.map { AckSuppressCache.suppressKey(instance.id, it) }.toSet(),
                 )
                 recordCompleted("ack", instance.id, fresh)
-                commandState = CommandState.Success(buildAckMsg(fresh.size, hostCount, addedServiceCount))
+                val msg = buildAckMsg(fresh.size, hostCount, addedServiceCount)
+                EventLog.info(appContext, EventLog.CAT_COMMAND, "ACK submitted — ${instance.name}: $msg")
+                commandState = CommandState.Success(msg)
                 refreshAfterCommand()
             } catch (e: Exception) {
+                val err = sanitizeError(e.message)
+                EventLog.error(appContext, EventLog.CAT_COMMAND, "ACK failed — ${instance.name}: $err")
                 commandState = CommandState.Error(e.message ?: "ACK failed")
             } finally {
                 deactivateKeys(activeKeys)
@@ -570,12 +575,16 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 // Mark as pending so the card shows "Recheck pending" until Nagios runs the check
                 val submittedAt = System.currentTimeMillis()
                 fresh.forEach { pendingRecheckMap[recheckPendingKey(instance.id, it)] = submittedAt }
-                commandState = CommandState.Success(recheckMsg(fresh.size))
+                val msg = recheckMsg(fresh.size)
+                EventLog.info(appContext, EventLog.CAT_COMMAND, "Recheck submitted — ${instance.name}: $msg")
+                commandState = CommandState.Success(msg)
                 refreshAfterCommand()
-                // Delayed refreshes to catch Nagios after it executes the forced check (Goal 5)
+                // Delayed refreshes to catch Nagios after it executes the forced check
                 viewModelScope.launch { kotlinx.coroutines.delay(3_000L); refreshAfterCommandDelayed() }
                 viewModelScope.launch { kotlinx.coroutines.delay(8_000L); refreshAfterCommandDelayed() }
             } catch (e: Exception) {
+                val err = sanitizeError(e.message)
+                EventLog.error(appContext, EventLog.CAT_COMMAND, "Recheck failed — ${instance.name}: $err")
                 commandState = CommandState.Error(e.message ?: "Recheck failed")
             } finally {
                 deactivateKeys(activeKeys)

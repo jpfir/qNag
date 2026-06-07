@@ -36,6 +36,7 @@ private const val NAV_NOTIFICATIONS= "notifications"
 private const val NAV_FILTERS      = "filters"
 private const val NAV_COMMANDS     = "commands"
 private const val NAV_ABOUT        = "about"
+private const val NAV_EVENT_LOG    = "event_log"
 
 // ── Search index ──────────────────────────────────────────────────────────────
 
@@ -105,6 +106,9 @@ private val SETTINGS_INDEX = listOf(
     // About
     SettingsItem("About qNag", "About", NAV_ABOUT,
         listOf("about", "version", "help", "readme", "reliability", "explanation")),
+    // Event Log
+    SettingsItem("Event Log", "About", NAV_EVENT_LOG,
+        listOf("log", "event", "debug", "troubleshoot", "history", "polling", "watchdog")),
 )
 
 // ── Main SettingsScreen entry point ──────────────────────────────────────────
@@ -164,6 +168,7 @@ fun SettingsScreen(
         NAV_ABOUT -> SettingsSubScreen("About qNag", onBack = { nav = NAV_HOME }) {
             AboutPage()
         }
+        NAV_EVENT_LOG -> EventLogScreen(onBack = { nav = NAV_HOME })
     }
 }
 
@@ -247,6 +252,7 @@ private fun SettingsHome(
                 item { SettingsNavItem("Filters", "Dashboard visibility filters and regex rules", NAV_FILTERS, onNavigate) }
                 item { SettingsNavItem("Commands", "ACK and recheck command behaviour", NAV_COMMANDS, onNavigate) }
                 item { SettingsNavItem("About", "App version and reliability explanation", NAV_ABOUT, onNavigate) }
+                item { SettingsNavItem("Event Log", "In-app log of polling, commands, and reliability events", NAV_EVENT_LOG, onNavigate) }
                 item { Spacer(Modifier.height(32.dp)) }
             }
         }
