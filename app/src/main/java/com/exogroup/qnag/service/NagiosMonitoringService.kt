@@ -25,6 +25,8 @@ import com.exogroup.qnag.data.instanceFingerprintPrefix
 import com.exogroup.qnag.data.problemFingerprint
 import com.exogroup.qnag.data.shouldNotify
 import com.exogroup.qnag.notifications.NotificationHelper
+import com.exogroup.qnag.notifications.NotificationIconHelper
+import com.exogroup.qnag.notifications.NotificationVisualState
 import com.exogroup.qnag.notifications.deriveVisualStateFromProblems
 import com.exogroup.qnag.notifications.visualStateColor
 import com.exogroup.qnag.notifications.ProblemToNotify
@@ -67,12 +69,21 @@ class NagiosMonitoringService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollingJob: Job? = null
     private val gson = Gson()
+    // Tracks the last derived visual state so the "poll in progress" notification refresh
+    // can show the same color/icon as the previous poll result, avoiding a transient green flash.
+    private var currentVisualState: NotificationVisualState = NotificationVisualState.OK
 
     override fun onCreate() {
         super.onCreate()
         // Channels must exist before startForeground() is called.
         NotificationHelper.createChannels(this)
-        startForeground(NotificationHelper.MONITORING_SERVICE_NOTIF_ID, buildPersistentNotification())
+        startForeground(
+            NotificationHelper.MONITORING_SERVICE_NOTIF_ID,
+            buildPersistentNotification(
+                color = visualStateColor(NotificationVisualState.OK),
+                largeIcon = NotificationIconHelper.largeIcon(NotificationVisualState.OK),
+            )
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -192,9 +203,11 @@ class NagiosMonitoringService : Service() {
             }
 
             val effectiveIntervalS = cmdSettings.foregroundPollingIntervalSeconds.coerceAtLeast(30)
-            // Update notification with poll-in-progress text (full summary posted at end of poll)
+            // Update notification with poll-in-progress text; reuse last known visual state so
+            // color/icon don't transiently reset to green while the new poll is running.
             updateForegroundNotification(
-                contentText = "${targets.size} instance${if (targets.size != 1) "s" else ""} · checking every ${effectiveIntervalS}s"
+                contentText = "${targets.size} instance${if (targets.size != 1) "s" else ""} · checking every ${effectiveIntervalS}s",
+                visualState = currentVisualState,
             )
 
             if (cmdSettings.debugCommandSubmission)
@@ -271,11 +284,16 @@ class NagiosMonitoringService : Service() {
                     val bigText = if (bodyLines.isNotEmpty())
                         bodyLines.joinToString("\n") + "\n$subtitle"
                     else subtitle
-                    // Derive accent color from the current worst alert state
-                    val notifColor = visualStateColor(
-                        deriveVisualStateFromProblems(allCurrentProblems, failedInstanceNames.size)
-                    )
-                    updateForegroundNotification(summaryTitle, contentText, bigText, notifColor)
+                    // Derive visual state from the current worst alert state and store for reuse
+                    val visualState = deriveVisualStateFromProblems(allCurrentProblems, failedInstanceNames.size)
+                    currentVisualState = visualState
+                    if (cmdSettings.debugCommandSubmission) {
+                        android.util.Log.d("qNag", "[notify] visualState=$visualState " +
+                            "total=${allCurrentProblems.size} new=${toNotify.size} " +
+                            "failed=${failedInstanceNames.size}")
+                    }
+                    updateForegroundNotification(summaryTitle, contentText, bigText,
+                        visualStateColor(visualState), visualState)
 
                     // Unified in-app sound decision — same logic used by foreground service and worker
                     AlertSoundController.evaluateAndPlay(
@@ -350,6 +368,7 @@ class NagiosMonitoringService : Service() {
         contentText: String = "Starting…",
         bigText: String? = null,
         color: Int = 0,
+        largeIcon: android.graphics.Bitmap? = null,
     ): Notification {
         val tapIntent = PendingIntent.getActivity(
             this, 0,
@@ -364,8 +383,10 @@ class NagiosMonitoringService : Service() {
             .setContentText(contentText)
             .apply {
                 if (bigText != null) setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
-                // color == 0 means "use system default" (e.g. before first poll completes)
                 if (color != 0) setColor(color)
+                // Large icon gives a colored circle in the compact notification row;
+                // setColor() alone is not reliably shown by all OEMs in the compact view.
+                if (largeIcon != null) setLargeIcon(largeIcon)
             }
             .setContentIntent(tapIntent)
             .setOngoing(true)
@@ -374,11 +395,11 @@ class NagiosMonitoringService : Service() {
     }
 
     /**
-     * Update the persistent foreground notification with an optional accent color.
+     * Update the persistent foreground notification.
      *
-     * In SUMMARY_ONLY mode the title is the alert-summary title ("qNag: 3 critical, …"),
-     * contentText shows instance count + interval, bigText shows per-instance lines, and
-     * color reflects the current worst alert state (green/amber/red/purple/orange).
+     * [visualState] drives the large-icon color shown in the compact notification row.
+     * In SUMMARY_ONLY mode the title is the alert-summary string ("qNag: 3 critical, …"),
+     * contentText shows instance count + interval, bigText shows per-instance lines.
      */
     @android.annotation.SuppressLint("MissingPermission")
     private fun updateForegroundNotification(
@@ -386,12 +407,16 @@ class NagiosMonitoringService : Service() {
         contentText: String,
         bigText: String? = null,
         color: Int = 0,
+        visualState: NotificationVisualState = NotificationVisualState.OK,
     ) {
         try {
             NotificationManagerCompat.from(applicationContext)
                 .notify(
                     NotificationHelper.MONITORING_SERVICE_NOTIF_ID,
-                    buildPersistentNotification(title, contentText, bigText, color)
+                    buildPersistentNotification(
+                        title, contentText, bigText, color,
+                        largeIcon = NotificationIconHelper.largeIcon(visualState),
+                    )
                 )
         } catch (_: Exception) {
         }

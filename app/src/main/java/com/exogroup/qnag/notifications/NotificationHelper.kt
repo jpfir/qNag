@@ -322,6 +322,7 @@ object NotificationHelper {
         val notif = NotificationCompat.Builder(context, CHANNEL_ALERT_SUMMARY)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setColor(visualStateColor(visualState))
+            .setLargeIcon(NotificationIconHelper.largeIcon(visualState))
             .setContentTitle(title)
             .setContentText(bodyLines.firstOrNull() ?: "")
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
@@ -353,7 +354,8 @@ object NotificationHelper {
         if (!hasPermission(context)) return
         val notif = NotificationCompat.Builder(context, CHANNEL_STALE)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setColor(visualStateColor(NotificationVisualState.FETCH_FAILURE)) // orange = stale/unreachable
+            .setColor(visualStateColor(NotificationVisualState.FETCH_FAILURE))
+            .setLargeIcon(NotificationIconHelper.largeIcon(NotificationVisualState.FETCH_FAILURE))
             .setContentTitle("qNag: monitoring stale")
             .setContentText(message)
             .setContentIntent(mainActivityIntent(context))

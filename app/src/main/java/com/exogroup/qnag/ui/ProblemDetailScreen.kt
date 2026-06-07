@@ -48,12 +48,13 @@ fun ProblemDetailScreen(
 
     if (showDowntimeDialog) {
         DowntimeDialog(
-            problem = problem,
+            problems = listOf(problem),
             instance = instance,
             commandSettings = commandSettings,
             onDismiss = { showDowntimeDialog = false },
             onSchedule = { scope, durationMs, comment ->
-                if (instance != null) {
+                // scope is never null for a single problem (dialog uses non-mixed mode)
+                if (instance != null && scope != null) {
                     nagiosViewModel.scheduleDowntime(instance, listOf(problem), scope, durationMs, comment, commandSettings)
                 }
                 showDowntimeDialog = false

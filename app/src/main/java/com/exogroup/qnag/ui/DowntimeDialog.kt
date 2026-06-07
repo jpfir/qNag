@@ -29,29 +29,48 @@ private val DURATION_PRESETS = listOf(
 )
 private const val CUSTOM_IDX = 5  // index after the 5 presets
 
-/** Dialog for scheduling fixed downtime on a single host or service problem. */
+/**
+ * Dialog for scheduling fixed downtime on one or more problems.
+ *
+ * Scope behavior:
+ *  - All services selected → scope selector shown, default SERVICE_ONLY.
+ *  - All hosts selected   → scope selector shown (HOST_ONLY / HOST_AND_SERVICES), default HOST_AND_SERVICES.
+ *  - Mixed selection      → no scope selector; [onSchedule] receives scope=null, meaning
+ *                           "services get SERVICE_ONLY, hosts get HOST_AND_SERVICES".
+ *
+ * The callback receives scope=null only for mixed selections; callers must handle it.
+ */
 @Composable
 fun DowntimeDialog(
-    problem: NagiosProblem,
-    instance: NagiosInstance?,
+    problems: List<NagiosProblem>,
+    instance: NagiosInstance?,        // null in ALL-mode / multi-select
     commandSettings: CommandSettings,
     onDismiss: () -> Unit,
-    onSchedule: (scope: DowntimeScope, durationMs: Long, comment: String) -> Unit,
+    onSchedule: (scope: DowntimeScope?, durationMs: Long, comment: String) -> Unit,
 ) {
-    val isService = problem is NagiosProblem.ServiceProblem
+    val allServices = problems.all { it is NagiosProblem.ServiceProblem }
+    val allHosts    = problems.all { it is NagiosProblem.HostProblem }
+    val isMixed     = !allServices && !allHosts
+    val isSingle    = problems.size == 1
 
     var selectedPresetIdx by remember { mutableIntStateOf(1) }   // default 1h
     var customHours   by remember { mutableStateOf("1") }
     var customMinutes by remember { mutableStateOf("0") }
     val isCustom = selectedPresetIdx == CUSTOM_IDX
 
-    val availableScopes: List<DowntimeScope> = if (isService) {
-        listOf(DowntimeScope.SERVICE_ONLY, DowntimeScope.HOST_ONLY, DowntimeScope.HOST_AND_SERVICES)
-    } else {
-        listOf(DowntimeScope.HOST_ONLY, DowntimeScope.HOST_AND_SERVICES)
+    val availableScopes: List<DowntimeScope> = when {
+        isMixed     -> emptyList()   // no selector for mixed — applied per problem type
+        allServices -> listOf(DowntimeScope.SERVICE_ONLY, DowntimeScope.HOST_ONLY, DowntimeScope.HOST_AND_SERVICES)
+        else        -> listOf(DowntimeScope.HOST_ONLY, DowntimeScope.HOST_AND_SERVICES)
     }
     var selectedScope by remember {
-        mutableStateOf(if (isService) DowntimeScope.SERVICE_ONLY else DowntimeScope.HOST_AND_SERVICES)
+        mutableStateOf(
+            when {
+                isMixed     -> null
+                allServices -> DowntimeScope.SERVICE_ONLY
+                else        -> DowntimeScope.HOST_AND_SERVICES
+            }
+        )
     }
 
     var comment by remember { mutableStateOf("Scheduled from qNag") }
@@ -73,24 +92,46 @@ fun DowntimeDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // Target info
+                // ── Target summary ────────────────────────────────────────────────
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    if (instance != null) {
+                    if (isSingle) {
+                        val p = problems.first()
+                        if (instance != null) {
+                            Text(
+                                "Instance: ${instance.name}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text("Host: ${p.hostName}", style = MaterialTheme.typography.bodySmall)
+                        if (p is NagiosProblem.ServiceProblem) {
+                            Text("Service: ${p.serviceName}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    } else {
+                        // Multi-select: show aggregate info
                         Text(
-                            "Instance: ${instance.name}",
+                            "${problems.size} alerts selected",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        )
+                        val hostCount = problems.count { it is NagiosProblem.HostProblem }
+                        val svcCount  = problems.count { it is NagiosProblem.ServiceProblem }
+                        val instCount = problems.map { it.instanceId }.distinct().size
+                        if (hostCount > 0) Text("$hostCount host alert${if (hostCount != 1) "s" else ""}",
+                            style = MaterialTheme.typography.bodySmall)
+                        if (svcCount > 0) Text("$svcCount service alert${if (svcCount != 1) "s" else ""}",
+                            style = MaterialTheme.typography.bodySmall)
+                        if (instCount > 1) Text(
+                            "Across $instCount instances",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    }
-                    Text("Host: ${problem.hostName}", style = MaterialTheme.typography.bodySmall)
-                    if (problem is NagiosProblem.ServiceProblem) {
-                        Text("Service: ${problem.serviceName}", style = MaterialTheme.typography.bodySmall)
                     }
                 }
 
                 HorizontalDivider()
 
-                // Duration presets
+                // ── Duration presets ──────────────────────────────────────────────
                 Text("Duration", style = MaterialTheme.typography.labelMedium)
                 Column(modifier = Modifier.selectableGroup()) {
                     DURATION_PRESETS.forEachIndexed { idx, preset ->
@@ -102,10 +143,7 @@ fun DowntimeDialog(
                             ),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            RadioButton(
-                                selected = selectedPresetIdx == idx,
-                                onClick = { selectedPresetIdx = idx },
-                            )
+                            RadioButton(selected = selectedPresetIdx == idx, onClick = { selectedPresetIdx = idx })
                             Text(preset.label, modifier = Modifier.padding(start = 4.dp))
                         }
                     }
@@ -117,10 +155,7 @@ fun DowntimeDialog(
                         ),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        RadioButton(
-                            selected = isCustom,
-                            onClick = { selectedPresetIdx = CUSTOM_IDX },
-                        )
+                        RadioButton(selected = isCustom, onClick = { selectedPresetIdx = CUSTOM_IDX })
                         Text("Custom", modifier = Modifier.padding(start = 4.dp))
                     }
                 }
@@ -154,42 +189,51 @@ fun DowntimeDialog(
 
                 HorizontalDivider()
 
-                // Scope selector
+                // ── Scope selector ────────────────────────────────────────────────
                 Text("Scope", style = MaterialTheme.typography.labelMedium)
-                Column(modifier = Modifier.selectableGroup()) {
-                    availableScopes.forEach { scope ->
-                        val label = when (scope) {
-                            DowntimeScope.SERVICE_ONLY -> "Service only"
-                            DowntimeScope.HOST_ONLY -> "Host only"
-                            DowntimeScope.HOST_AND_SERVICES -> "Host and all services"
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth().selectable(
-                                selected = selectedScope == scope,
-                                onClick = { selectedScope = scope },
-                                role = Role.RadioButton,
-                            ),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(
-                                selected = selectedScope == scope,
-                                onClick = { selectedScope = scope },
-                            )
-                            Text(label, modifier = Modifier.padding(start = 4.dp))
-                        }
-                    }
-                }
-                if (selectedScope == DowntimeScope.HOST_AND_SERVICES) {
+                if (isMixed) {
+                    // Mixed: scope is fixed per problem type, explain it clearly
                     Text(
-                        "⚠ This schedules downtime for the host AND all its services.",
+                        "Service alerts will get service downtime.\nHost alerts will get host + services downtime.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                } else {
+                    Column(modifier = Modifier.selectableGroup()) {
+                        availableScopes.forEach { scope ->
+                            val label = when (scope) {
+                                DowntimeScope.SERVICE_ONLY -> "Service only"
+                                DowntimeScope.HOST_ONLY -> "Host only"
+                                DowntimeScope.HOST_AND_SERVICES -> "Host and all services"
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth().selectable(
+                                    selected = selectedScope == scope,
+                                    onClick = { selectedScope = scope },
+                                    role = Role.RadioButton,
+                                ),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RadioButton(
+                                    selected = selectedScope == scope,
+                                    onClick = { selectedScope = scope },
+                                )
+                                Text(label, modifier = Modifier.padding(start = 4.dp))
+                            }
+                        }
+                    }
+                    if (selectedScope == DowntimeScope.HOST_AND_SERVICES) {
+                        Text(
+                            "⚠ This schedules downtime for the host AND all its services.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
                 HorizontalDivider()
 
-                // Comment field
+                // ── Comment ───────────────────────────────────────────────────────
                 Text("Comment", style = MaterialTheme.typography.labelMedium)
                 OutlinedTextField(
                     value = comment,
@@ -204,8 +248,9 @@ fun DowntimeDialog(
                 onClick = { onSchedule(selectedScope, durationMs, comment) },
                 enabled = isValid,
             ) {
-                val label = when (selectedScope) {
-                    DowntimeScope.HOST_AND_SERVICES -> "Schedule (host + services)"
+                val label = when {
+                    isMixed -> "Schedule downtime"
+                    selectedScope == DowntimeScope.HOST_AND_SERVICES -> "Schedule (host + services)"
                     else -> "Schedule downtime"
                 }
                 Text(label)

@@ -210,19 +210,28 @@ fun DashboardScreen(
     // Pending confirmation: set to problems to unack, cleared after confirm/dismiss
     var pendingUnack by remember { mutableStateOf<List<NagiosProblem>?>(null) }
 
-    // Pending downtime: problem + resolved instance, cleared after dialog confirm/dismiss
-    var pendingDowntimeProblem  by remember { mutableStateOf<NagiosProblem?>(null) }
-    var pendingDowntimeInstance by remember { mutableStateOf<NagiosInstance?>(null) }
+    // Pending downtime: list of problems (1 for card overflow, N for multi-select)
+    // pendingDowntimeInstance is set for single-problem card overflow; null for multi-select.
+    var pendingDowntimeProblems  by remember { mutableStateOf<List<NagiosProblem>?>(null) }
+    var pendingDowntimeInstance  by remember { mutableStateOf<NagiosInstance?>(null) }
 
-    pendingDowntimeProblem?.let { dtProblem ->
+    pendingDowntimeProblems?.let { dtProblems ->
         DowntimeDialog(
-            problem = dtProblem,
+            problems = dtProblems,
             instance = pendingDowntimeInstance,
             commandSettings = commandSettings,
-            onDismiss = { pendingDowntimeProblem = null; pendingDowntimeInstance = null },
+            onDismiss = { pendingDowntimeProblems = null; pendingDowntimeInstance = null },
             onSchedule = { scope, durationMs, comment ->
-                doDowntime(listOf(dtProblem), scope, durationMs, comment)
-                pendingDowntimeProblem = null
+                if (scope != null) {
+                    doDowntime(dtProblems, scope, durationMs, comment)
+                } else {
+                    // Mixed selection: services get SERVICE_ONLY, hosts get HOST_AND_SERVICES
+                    val services = dtProblems.filterIsInstance<NagiosProblem.ServiceProblem>()
+                    val hosts    = dtProblems.filterIsInstance<NagiosProblem.HostProblem>()
+                    if (services.isNotEmpty()) doDowntime(services, com.exogroup.qnag.data.DowntimeScope.SERVICE_ONLY, durationMs, comment)
+                    if (hosts.isNotEmpty())    doDowntime(hosts,    com.exogroup.qnag.data.DowntimeScope.HOST_AND_SERVICES, durationMs, comment)
+                }
+                pendingDowntimeProblems = null
                 pendingDowntimeInstance = null
             },
         )
@@ -343,6 +352,15 @@ fun DashboardScreen(
                                     enabled = anySelectedAcked,
                                 )
                                 DropdownMenuItem(
+                                    text = { Text("Schedule downtime selected") },
+                                    onClick = {
+                                        multiMenuExpanded = false
+                                        pendingDowntimeProblems = selectedProblems
+                                        pendingDowntimeInstance = null
+                                        selectedIds = emptySet()
+                                    },
+                                )
+                                DropdownMenuItem(
                                     text = { Text("Copy summaries") },
                                     onClick = {
                                         multiMenuExpanded = false
@@ -424,7 +442,7 @@ fun DashboardScreen(
                     val instId = p.instanceId.ifEmpty {
                         (selectedInstance as? InstanceSelection.Single)?.instance?.id ?: instance.id
                     }
-                    pendingDowntimeProblem = p
+                    pendingDowntimeProblems = listOf(p)
                     pendingDowntimeInstance = enabledInstances.find { it.id == instId }
                 }
             },
