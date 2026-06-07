@@ -10,6 +10,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.exogroup.qnag.data.AckSuppressCache
 import com.exogroup.qnag.data.CommandSettings
+import com.exogroup.qnag.data.DowntimeScope
 import com.exogroup.qnag.data.InstanceSummary
 import com.exogroup.qnag.data.NagiosApi
 import com.exogroup.qnag.data.NagiosInstance
@@ -466,6 +467,88 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // ── Downtime ──────────────────────────────────────────────────────────────
+
+    /** Single-instance downtime with two-layer dedup. Command key includes scope for precision. */
+    fun scheduleDowntime(
+        instance: NagiosInstance,
+        problems: List<NagiosProblem>,
+        scope: DowntimeScope,
+        durationMs: Long,
+        comment: String,
+        commandSettings: CommandSettings,
+    ) {
+        if (problems.isEmpty()) return
+        cleanupRecentCommands()
+        val kind = "downtime${SEP}${scope.name}"
+        val fresh = problems.distinctBy { it.uniqueId }
+            .filter { !isCommandBlocked(kind, instance.id, it) }
+        if (fresh.isEmpty()) {
+            commandState = CommandState.Success("Downtime already submitted")
+            return
+        }
+        val activeKeys = activateKeys(kind, instance.id, fresh)
+        commandState = CommandState.Loading
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    fresh.forEach { api.scheduleDowntime(instance, it, scope, durationMs, comment, commandSettings) }
+                }
+                recordCompleted(kind, instance.id, fresh)
+                commandState = CommandState.Success(downtimeMsg(fresh.size))
+                refreshAfterCommand()
+            } catch (e: Exception) {
+                commandState = CommandState.Error(sanitizeError(e.message))
+            } finally {
+                deactivateKeys(activeKeys)
+            }
+        }
+    }
+
+    /** ALL-mode downtime — routes each problem to its own instance; two-layer dedup. */
+    fun scheduleDowntime(
+        allInstances: List<NagiosInstance>,
+        problems: List<NagiosProblem>,
+        scope: DowntimeScope,
+        durationMs: Long,
+        comment: String,
+        commandSettings: CommandSettings,
+    ) {
+        if (problems.isEmpty()) return
+        cleanupRecentCommands()
+        val kind = "downtime${SEP}${scope.name}"
+        val fresh = problems.distinctBy { it.instanceId + SEP + it.uniqueId }
+            .filter { !isCommandBlocked(kind, it.instanceId, it) }
+        if (fresh.isEmpty()) {
+            commandState = CommandState.Success("Downtime already submitted")
+            return
+        }
+        val instanceMap = allInstances.associateBy { it.id }
+        val grouped = fresh.groupBy { it.instanceId }
+        val activeKeys = HashSet<String>()
+        grouped.forEach { (id, group) ->
+            if (instanceMap.containsKey(id)) activeKeys.addAll(activateKeys(kind, id, group))
+        }
+        commandState = CommandState.Loading
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    grouped.forEach { (id, group) ->
+                        val instance = instanceMap[id] ?: return@forEach
+                        group.forEach { api.scheduleDowntime(instance, it, scope, durationMs, comment, commandSettings) }
+                    }
+                }
+                grouped.forEach { (id, group) -> recordCompleted(kind, id, group) }
+                commandState = CommandState.Success(downtimeMsg(fresh.size))
+                refreshAfterCommand()
+            } catch (e: Exception) {
+                commandState = CommandState.Error(sanitizeError(e.message))
+            } finally {
+                deactivateKeys(activeKeys)
+            }
+        }
+    }
+
     // ── Recheck ───────────────────────────────────────────────────────────────
 
     /** Single-instance recheck with two-layer dedup. */
@@ -714,6 +797,8 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
     private fun recheckMsg(count: Int) = "Recheck submitted for $count problem${if (count != 1) "s" else ""}"
 
     private fun unackMsg(count: Int) = "Removed ACK from $count alert${if (count != 1) "s" else ""}"
+
+    private fun downtimeMsg(count: Int) = "Downtime scheduled for $count alert${if (count != 1) "s" else ""}"
 
     private fun sanitizeError(msg: String?): String =
         (msg ?: "Unknown error")

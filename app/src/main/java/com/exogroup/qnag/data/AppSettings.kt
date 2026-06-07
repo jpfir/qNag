@@ -9,4 +9,5 @@ data class AppSettings(
     // "INSTANCE:<uuid>"  → show a single instance
     // Defaults to "ALL" so existing users with multiple instances get the merged view.
     val selectedDashboardScope: String = "ALL",
+    val summaryExpanded: Boolean = true,
 )

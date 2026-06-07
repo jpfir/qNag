@@ -11,7 +11,6 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -36,18 +35,19 @@ fun InstanceSummaryPanel(
     isAllMode: Boolean,
     enabledInstances: List<NagiosInstance>,
     onSelectInstance: (NagiosInstance) -> Unit,
+    expanded: Boolean = true,
+    onExpandedChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     if (summaries.isEmpty()) return
 
     if (isAllMode) {
-        var expanded by rememberSaveable { mutableStateOf(true) }
         AllModeSummary(
             summaries = summaries,
             enabledInstances = enabledInstances,
             onSelectInstance = onSelectInstance,
             expanded = expanded,
-            onToggleExpand = { expanded = !expanded },
+            onToggleExpand = { onExpandedChanged(!expanded) },
             modifier = modifier,
         )
     } else {

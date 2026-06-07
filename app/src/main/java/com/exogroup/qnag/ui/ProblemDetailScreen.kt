@@ -43,7 +43,23 @@ fun ProblemDetailScreen(
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val snackbarHostState = remember { SnackbarHostState() }
-    var showUnackConfirm by remember { mutableStateOf(false) }
+    var showUnackConfirm    by remember { mutableStateOf(false) }
+    var showDowntimeDialog  by remember { mutableStateOf(false) }
+
+    if (showDowntimeDialog) {
+        DowntimeDialog(
+            problem = problem,
+            instance = instance,
+            commandSettings = commandSettings,
+            onDismiss = { showDowntimeDialog = false },
+            onSchedule = { scope, durationMs, comment ->
+                if (instance != null) {
+                    nagiosViewModel.scheduleDowntime(instance, listOf(problem), scope, durationMs, comment, commandSettings)
+                }
+                showDowntimeDialog = false
+            },
+        )
+    }
 
     if (showUnackConfirm) {
         AlertDialog(
@@ -129,39 +145,47 @@ fun ProblemDetailScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            // ACK and Recheck actions
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                if (problem.acknowledged) {
-                    OutlinedButton(
-                        onClick = { showUnackConfirm = true },
-                        enabled = instance != null,
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Remove ACK") }
-                } else {
-                    OutlinedButton(
+                // ACK / Remove ACK + Recheck
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (problem.acknowledged) {
+                        OutlinedButton(
+                            onClick = { showUnackConfirm = true },
+                            enabled = instance != null,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Remove ACK") }
+                    } else {
+                        OutlinedButton(
+                            onClick = {
+                                if (instance != null) {
+                                    nagiosViewModel.acknowledgeProblems(instance, listOf(problem), commandSettings)
+                                }
+                            },
+                            enabled = instance != null,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Acknowledge") }
+                    }
+                    Button(
                         onClick = {
                             if (instance != null) {
-                                nagiosViewModel.acknowledgeProblems(instance, listOf(problem), commandSettings)
+                                nagiosViewModel.recheckProblems(instance, listOf(problem), commandSettings)
                             }
                         },
                         enabled = instance != null,
                         modifier = Modifier.weight(1f),
-                    ) { Text("Acknowledge") }
+                    ) { Text("Recheck") }
                 }
-                Button(
-                    onClick = {
-                        if (instance != null) {
-                            nagiosViewModel.recheckProblems(instance, listOf(problem), commandSettings)
-                        }
-                    },
+                // Downtime
+                OutlinedButton(
+                    onClick = { showDowntimeDialog = true },
                     enabled = instance != null,
-                    modifier = Modifier.weight(1f),
-                ) { Text("Recheck") }
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Schedule downtime…") }
             }
         },
     ) { paddingValues ->

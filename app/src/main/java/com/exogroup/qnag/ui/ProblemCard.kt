@@ -45,6 +45,7 @@ fun ProblemCard(
     onCopyOutput: (() -> Unit)? = null,
     onShare: (() -> Unit)? = null,
     onOpenInNagios: (() -> Unit)? = null,
+    onScheduleDowntime: (() -> Unit)? = null,
     onToggleSelect: () -> Unit,
     onLongPress: () -> Unit,
     onUnack: (() -> Unit)? = null,
@@ -140,6 +141,7 @@ fun ProblemCard(
                     onCopyOutput = onCopyOutput,
                     onShare = onShare,
                     onOpenInNagios = onOpenInNagios,
+                    onScheduleDowntime = onScheduleDowntime,
                 )
             }
         }
@@ -161,6 +163,7 @@ private fun ProblemCardContent(
     onCopyOutput: (() -> Unit)? = null,
     onShare: (() -> Unit)? = null,
     onOpenInNagios: (() -> Unit)? = null,
+    onScheduleDowntime: (() -> Unit)? = null,
 ) {
     Column(modifier = Modifier.padding(12.dp)) {
         // ── Name block — instance chip floats to top-right so names use full width ──
@@ -252,12 +255,18 @@ private fun ProblemCardContent(
                         )
                     }
                     HorizontalDivider()
-                    // TODO: implement Nagios cmd.cgi downtime scheduling
-                    DropdownMenuItem(
-                        text = { Text("Schedule downtime…", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)) },
-                        onClick = {},
-                        enabled = false,
-                    )
+                    if (onScheduleDowntime != null) {
+                        DropdownMenuItem(
+                            text = { Text("Schedule downtime…") },
+                            onClick = { menuExpanded = false; onScheduleDowntime() },
+                        )
+                    } else {
+                        DropdownMenuItem(
+                            text = { Text("Schedule downtime…", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)) },
+                            onClick = {},
+                            enabled = false,
+                        )
+                    }
                 }
             }
         }
@@ -441,12 +450,12 @@ private fun StateBadge(label: String, textColor: Color, bgColor: Color) {
     }
 }
 
-/** "NEW" chip — solid teal bg + white text for visibility on all card colours (light/dark). */
+/** "NEW" chip — solid blue bg + white text; visually distinct from the green ACK badge. */
 @Composable
 private fun NewBadge() {
     Surface(
         shape = RoundedCornerShape(4.dp),
-        color = Color(0xFF00897B),   // teal 600 — contrasts with critical red, warning yellow, unknown purple
+        color = Color(0xFF1565C0),   // blue 800 — distinct from ACK green, readable on all card colors
         contentColor = Color.White,
     ) {
         Text(

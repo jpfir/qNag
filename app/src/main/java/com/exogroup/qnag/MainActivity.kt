@@ -135,6 +135,12 @@ class MainActivity : ComponentActivity() {
                                     store.saveAppSettings(updated)
                                     appSettings = updated
                                 },
+                                initialSummaryExpanded = appSettings.summaryExpanded,
+                                onSummaryExpandedChanged = { expanded ->
+                                    val updated = appSettings.copy(summaryExpanded = expanded)
+                                    store.saveAppSettings(updated)
+                                    appSettings = updated
+                                },
                                 onOpenProblemDetail = { problem, instance ->
                                     screen = AppScreen.ProblemDetail(
                                         problem = problem,

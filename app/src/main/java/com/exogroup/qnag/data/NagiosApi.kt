@@ -257,6 +257,54 @@ class NagiosApi {
         settings: CommandSettings,
     ) = problems.forEach { unacknowledgeProblem(instance, it, settings) }
 
+    // Downtime command types:  55 = CMD_SCHEDULE_HOST_DOWNTIME
+    //                           56 = CMD_SCHEDULE_SVC_DOWNTIME
+    //                           86 = CMD_SCHEDULE_AND_PROPAGATE_HOST_DOWNTIME (host + services)
+    fun scheduleDowntime(
+        instance: NagiosInstance,
+        problem: NagiosProblem,
+        scope: DowntimeScope,
+        durationMs: Long,
+        comment: String,
+        settings: CommandSettings,
+    ) {
+        val baseUrl = instance.url.trimEnd('/')
+        val credential = Credentials.basic(instance.username, instance.password)
+        val cmdType = when (scope) {
+            DowntimeScope.HOST_ONLY -> "55"
+            DowntimeScope.SERVICE_ONLY -> "56"
+            DowntimeScope.HOST_AND_SERVICES -> "86"
+        }
+
+        val sdf = SimpleDateFormat(settings.resolvedDateFormat.pattern, Locale.US)
+        sdf.timeZone = TimeZone.getTimeZone("UTC")
+        val nowDate = Date()
+        val startTime = sdf.format(nowDate)
+        val endTime = sdf.format(Date(nowDate.time + durationMs))
+        val durationMinutes = durationMs / 60_000L
+
+        val body = FormBody.Builder()
+            .add("cmd_mod", "2")
+            .add("cmd_typ", cmdType)
+            .add("host", problem.hostName)
+            .add("start_time", startTime)
+            .add("end_time", endTime)
+            .add("fixed", "1")
+            .add("trigger", "0")
+            .add("hours", "${durationMinutes / 60}")
+            .add("minutes", "${durationMinutes % 60}")
+            .add("com_author", settings.ackAuthor.ifBlank { "qNag" })
+            .add("com_data", comment.ifBlank { "Scheduled from qNag" })
+            .apply {
+                if (scope == DowntimeScope.SERVICE_ONLY && problem is NagiosProblem.ServiceProblem) {
+                    add("service", problem.serviceName)
+                }
+            }
+            .build()
+
+        executeCommandWithCsrf("$baseUrl/nagios/cgi-bin/cmd.cgi", credential, body, "downtime", settings)
+    }
+
     // ── CSRF-aware command execution ──────────────────────────────────────────
 
     private fun executeCommandWithCsrf(

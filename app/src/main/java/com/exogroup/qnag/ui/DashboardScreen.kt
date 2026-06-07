@@ -59,8 +59,11 @@ fun DashboardScreen(
     initialDashboardScope: String = "ALL",
     // Called whenever the user changes the scope so the caller can persist the new value.
     onScopeChanged: (String) -> Unit = {},
-    // Navigate to the full-screen problem detail view (Goal 3).
+    // Navigate to the full-screen problem detail view.
     onOpenProblemDetail: (NagiosProblem, NagiosInstance?) -> Unit = { _, _ -> },
+    // Persisted summary panel expanded state.
+    initialSummaryExpanded: Boolean = true,
+    onSummaryExpandedChanged: (Boolean) -> Unit = {},
     nagiosViewModel: NagiosViewModel = viewModel(),
 ) {
     val enabledInstances = remember(allInstances) { allInstances.filter { it.enabled } }
@@ -182,7 +185,10 @@ fun DashboardScreen(
         }
     }
 
-    // ACK / recheck / unack helpers that route correctly in single vs ALL mode
+    // ── Summary expanded state (persisted) ────────────────────────────────────
+    var summaryExpanded by remember { mutableStateOf(initialSummaryExpanded) }
+
+    // ACK / recheck / unack / downtime helpers that route correctly in single vs ALL mode
     fun doAck(problems: List<NagiosProblem>) = when (val sel = selectedInstance) {
         is InstanceSelection.All -> nagiosViewModel.acknowledgeProblems(enabledInstances, problems, commandSettings)
         is InstanceSelection.Single -> nagiosViewModel.acknowledgeProblems(sel.instance, problems, commandSettings)
@@ -195,9 +201,32 @@ fun DashboardScreen(
         is InstanceSelection.All -> nagiosViewModel.unacknowledgeProblems(enabledInstances, problems, commandSettings)
         is InstanceSelection.Single -> nagiosViewModel.unacknowledgeProblems(sel.instance, problems, commandSettings)
     }
+    fun doDowntime(problems: List<NagiosProblem>, scope: com.exogroup.qnag.data.DowntimeScope, durationMs: Long, comment: String) =
+        when (val sel = selectedInstance) {
+            is InstanceSelection.All -> nagiosViewModel.scheduleDowntime(enabledInstances, problems, scope, durationMs, comment, commandSettings)
+            is InstanceSelection.Single -> nagiosViewModel.scheduleDowntime(sel.instance, problems, scope, durationMs, comment, commandSettings)
+        }
 
     // Pending confirmation: set to problems to unack, cleared after confirm/dismiss
     var pendingUnack by remember { mutableStateOf<List<NagiosProblem>?>(null) }
+
+    // Pending downtime: problem + resolved instance, cleared after dialog confirm/dismiss
+    var pendingDowntimeProblem  by remember { mutableStateOf<NagiosProblem?>(null) }
+    var pendingDowntimeInstance by remember { mutableStateOf<NagiosInstance?>(null) }
+
+    pendingDowntimeProblem?.let { dtProblem ->
+        DowntimeDialog(
+            problem = dtProblem,
+            instance = pendingDowntimeInstance,
+            commandSettings = commandSettings,
+            onDismiss = { pendingDowntimeProblem = null; pendingDowntimeInstance = null },
+            onSchedule = { scope, durationMs, comment ->
+                doDowntime(listOf(dtProblem), scope, durationMs, comment)
+                pendingDowntimeProblem = null
+                pendingDowntimeInstance = null
+            },
+        )
+    }
 
     pendingUnack?.let { problems ->
         AlertDialog(
@@ -390,6 +419,20 @@ fun DashboardScreen(
             onUnack = { key ->
                 visibleProblems.firstOrNull { problemKey(it) == key }?.let { pendingUnack = listOf(it) }
             },
+            onScheduleDowntime = { key ->
+                visibleProblems.firstOrNull { problemKey(it) == key }?.let { p ->
+                    val instId = p.instanceId.ifEmpty {
+                        (selectedInstance as? InstanceSelection.Single)?.instance?.id ?: instance.id
+                    }
+                    pendingDowntimeProblem = p
+                    pendingDowntimeInstance = enabledInstances.find { it.id == instId }
+                }
+            },
+            summaryExpanded = summaryExpanded,
+            onSummaryExpandedChanged = { expanded ->
+                summaryExpanded = expanded
+                onSummaryExpandedChanged(expanded)
+            },
             onRetry = {
                 when (val sel = selectedInstance) {
                     is InstanceSelection.All -> nagiosViewModel.fetchAlertsForAll(enabledInstances, skipIfRunning = false)
@@ -423,6 +466,9 @@ private fun DashboardContent(
     onAck: (String) -> Unit,
     onRecheck: (String) -> Unit,
     onUnack: (String) -> Unit,
+    onScheduleDowntime: (String) -> Unit = {},
+    summaryExpanded: Boolean = true,
+    onSummaryExpandedChanged: (Boolean) -> Unit = {},
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -441,6 +487,8 @@ private fun DashboardContent(
                 isAllMode = isAllMode,
                 enabledInstances = enabledInstances,
                 onSelectInstance = onSelectInstance,
+                expanded = summaryExpanded,
+                onExpandedChanged = onSummaryExpandedChanged,
             )
             Spacer(Modifier.height(4.dp))
         }
@@ -456,7 +504,7 @@ private fun DashboardContent(
                         isRecheckPending = isRecheckPending,
                         problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack,
+                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack, onScheduleDowntime = onScheduleDowntime,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
                         isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
                 }
@@ -473,7 +521,7 @@ private fun DashboardContent(
                         isRecheckPending = isRecheckPending,
                         problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack,
+                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack, onScheduleDowntime = onScheduleDowntime,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
                         isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
                 } else {
@@ -510,7 +558,7 @@ private fun DashboardContent(
                         isRecheckPending = isRecheckPending, problemKey = problemKey,
                         onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack,
+                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack, onScheduleDowntime = onScheduleDowntime,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = state.problems.size, lastUpdated = state.lastUpdated, stale = false) },
                         isRefreshing = false, onRefresh = onRetry)
                 }
@@ -537,6 +585,7 @@ private fun ProblemList(
     onAck: (String) -> Unit,
     onRecheck: (String) -> Unit,
     onUnack: (String) -> Unit = {},
+    onScheduleDowntime: (String) -> Unit = {},
     header: @Composable () -> Unit,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
@@ -576,6 +625,7 @@ private fun ProblemList(
                         context.startActivity(android.content.Intent.createChooser(intent, "Share alert"))
                     },
                     onUnack = if (problem.acknowledged || locallyAcked) { { onUnack(key) } } else null,
+                    onScheduleDowntime = { onScheduleDowntime(key) },
                     onToggleSelect = { onToggleSelect(key) },
                     onLongPress = { onLongPress(key) },
                     onAck = { onAck(key) },

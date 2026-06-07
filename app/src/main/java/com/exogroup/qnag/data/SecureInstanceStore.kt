@@ -76,6 +76,7 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 commandSettings = parseCommandSettings(root.get("commandSettings")),
                 selectedDashboardScope = root.get("selectedDashboardScope")
                     ?.takeIf { !it.isJsonNull }?.asString ?: "ALL",
+                summaryExpanded = root.get("summaryExpanded")?.asBoolean ?: true,
             )
         } catch (e: Exception) {
             AppSettings()
