@@ -43,6 +43,26 @@ fun ProblemDetailScreen(
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val snackbarHostState = remember { SnackbarHostState() }
+    var showUnackConfirm by remember { mutableStateOf(false) }
+
+    if (showUnackConfirm) {
+        AlertDialog(
+            onDismissRequest = { showUnackConfirm = false },
+            title = { Text("Remove acknowledgement") },
+            text = { Text("Remove acknowledgement from this alert?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (instance != null) {
+                        nagiosViewModel.unacknowledgeProblems(instance, listOf(problem), commandSettings)
+                    }
+                    showUnackConfirm = false
+                }) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUnackConfirm = false }) { Text("Cancel") }
+            },
+        )
+    }
 
     LaunchedEffect(nagiosViewModel.commandState) {
         when (val cs = nagiosViewModel.commandState) {
@@ -116,15 +136,23 @@ fun ProblemDetailScreen(
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                OutlinedButton(
-                    onClick = {
-                        if (instance != null) {
-                            nagiosViewModel.acknowledgeProblems(instance, listOf(problem), commandSettings)
-                        }
-                    },
-                    enabled = instance != null && !problem.acknowledged,
-                    modifier = Modifier.weight(1f),
-                ) { Text("Acknowledge") }
+                if (problem.acknowledged) {
+                    OutlinedButton(
+                        onClick = { showUnackConfirm = true },
+                        enabled = instance != null,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Remove ACK") }
+                } else {
+                    OutlinedButton(
+                        onClick = {
+                            if (instance != null) {
+                                nagiosViewModel.acknowledgeProblems(instance, listOf(problem), commandSettings)
+                            }
+                        },
+                        enabled = instance != null,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Acknowledge") }
+                }
                 Button(
                     onClick = {
                         if (instance != null) {

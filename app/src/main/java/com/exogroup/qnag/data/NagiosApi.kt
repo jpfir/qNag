@@ -32,9 +32,20 @@ class NagiosApi {
         val hosts = fetchHostProblems(baseUrl, credential)
             .map { it.copy(instanceId = instance.id, instanceName = instance.name) }
 
-        return (hosts + services).sortedWith(
-            compareBy({ severityRank(it) }, { it.hostName }, { serviceNameOf(it) })
-        )
+        val now = System.currentTimeMillis()
+        return (hosts + services).sortedWith(compareBy(
+            { severityRank(it) },
+            // NEW problems (state changed within last 15 min) first within severity
+            { if ((it.lastStateChange ?: 0L) > now - 15 * 60 * 1_000L) 0 else 1 },
+            // Unacked and not-in-downtime before acked/downtime
+            { if (it.acknowledged || it.scheduledDowntimeDepth > 0) 1 else 0 },
+            // Notifications-enabled before disabled
+            { if (it.notificationsEnabled) 0 else 1 },
+            // Newer state changes first within the band
+            { -(it.lastStateChange ?: 0L) },
+            { it.hostName },
+            { serviceNameOf(it) },
+        ))
     }
 
     private fun fetchServiceProblems(baseUrl: String, credential: String): List<NagiosProblem.ServiceProblem> {
@@ -216,6 +227,35 @@ class NagiosApi {
         problems: List<NagiosProblem>,
         settings: CommandSettings,
     ) = problems.forEach { recheckProblem(instance, it, settings) }
+
+    // Remove-ACK command types:  51 = REMOVE_HOST_ACKNOWLEDGEMENT
+    //                             52 = REMOVE_SVC_ACKNOWLEDGEMENT
+    fun unacknowledgeProblem(
+        instance: NagiosInstance,
+        problem: NagiosProblem,
+        settings: CommandSettings,
+    ) {
+        val baseUrl = instance.url.trimEnd('/')
+        val credential = Credentials.basic(instance.username, instance.password)
+        val cmdType = if (problem is NagiosProblem.HostProblem) "51" else "52"
+
+        val body = FormBody.Builder()
+            .add("cmd_mod", "2")
+            .add("cmd_typ", cmdType)
+            .add("host", problem.hostName)
+            .apply {
+                if (problem is NagiosProblem.ServiceProblem) add("service", problem.serviceName)
+            }
+            .build()
+
+        executeCommandWithCsrf("$baseUrl/nagios/cgi-bin/cmd.cgi", credential, body, "unack", settings)
+    }
+
+    fun unacknowledgeProblems(
+        instance: NagiosInstance,
+        problems: List<NagiosProblem>,
+        settings: CommandSettings,
+    ) = problems.forEach { unacknowledgeProblem(instance, it, settings) }
 
     // ── CSRF-aware command execution ──────────────────────────────────────────
 

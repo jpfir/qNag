@@ -182,7 +182,7 @@ fun DashboardScreen(
         }
     }
 
-    // ACK / recheck helpers that route correctly in single vs ALL mode
+    // ACK / recheck / unack helpers that route correctly in single vs ALL mode
     fun doAck(problems: List<NagiosProblem>) = when (val sel = selectedInstance) {
         is InstanceSelection.All -> nagiosViewModel.acknowledgeProblems(enabledInstances, problems, commandSettings)
         is InstanceSelection.Single -> nagiosViewModel.acknowledgeProblems(sel.instance, problems, commandSettings)
@@ -190,6 +190,32 @@ fun DashboardScreen(
     fun doRecheck(problems: List<NagiosProblem>) = when (val sel = selectedInstance) {
         is InstanceSelection.All -> nagiosViewModel.recheckProblems(enabledInstances, problems, commandSettings)
         is InstanceSelection.Single -> nagiosViewModel.recheckProblems(sel.instance, problems, commandSettings)
+    }
+    fun doUnack(problems: List<NagiosProblem>) = when (val sel = selectedInstance) {
+        is InstanceSelection.All -> nagiosViewModel.unacknowledgeProblems(enabledInstances, problems, commandSettings)
+        is InstanceSelection.Single -> nagiosViewModel.unacknowledgeProblems(sel.instance, problems, commandSettings)
+    }
+
+    // Pending confirmation: set to problems to unack, cleared after confirm/dismiss
+    var pendingUnack by remember { mutableStateOf<List<NagiosProblem>?>(null) }
+
+    pendingUnack?.let { problems ->
+        AlertDialog(
+            onDismissRequest = { pendingUnack = null },
+            title = { Text("Remove acknowledgement") },
+            text = {
+                Text(
+                    if (problems.size == 1) "Remove acknowledgement from this alert?"
+                    else "Remove acknowledgement from ${problems.size} alerts?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { doUnack(problems); pendingUnack = null }) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingUnack = null }) { Text("Cancel") }
+            },
+        )
     }
 
     Scaffold(
@@ -276,6 +302,17 @@ fun DashboardScreen(
                                     text = { Text("Recheck selected") },
                                     onClick = { multiMenuExpanded = false; doRecheck(selectedProblems); selectedIds = emptySet() },
                                 )
+                                val anySelectedAcked = selectedProblems.any { it.acknowledged || isLocallyAcked(it) }
+                                DropdownMenuItem(
+                                    text = { Text("Remove ACK") },
+                                    onClick = {
+                                        multiMenuExpanded = false
+                                        val toUnack = selectedProblems.filter { it.acknowledged || isLocallyAcked(it) }
+                                        if (toUnack.isNotEmpty()) pendingUnack = toUnack
+                                        selectedIds = emptySet()
+                                    },
+                                    enabled = anySelectedAcked,
+                                )
                                 DropdownMenuItem(
                                     text = { Text("Copy summaries") },
                                     onClick = {
@@ -350,6 +387,9 @@ fun DashboardScreen(
             onRecheck = { key ->
                 visibleProblems.firstOrNull { problemKey(it) == key }?.let { doRecheck(listOf(it)) }
             },
+            onUnack = { key ->
+                visibleProblems.firstOrNull { problemKey(it) == key }?.let { pendingUnack = listOf(it) }
+            },
             onRetry = {
                 when (val sel = selectedInstance) {
                     is InstanceSelection.All -> nagiosViewModel.fetchAlertsForAll(enabledInstances, skipIfRunning = false)
@@ -382,6 +422,7 @@ private fun DashboardContent(
     onLongPress: (String) -> Unit,
     onAck: (String) -> Unit,
     onRecheck: (String) -> Unit,
+    onUnack: (String) -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -415,7 +456,7 @@ private fun DashboardContent(
                         isRecheckPending = isRecheckPending,
                         problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAck = onAck, onRecheck = onRecheck,
+                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
                         isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
                 }
@@ -432,7 +473,7 @@ private fun DashboardContent(
                         isRecheckPending = isRecheckPending,
                         problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAck = onAck, onRecheck = onRecheck,
+                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
                         isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
                 } else {
@@ -469,7 +510,7 @@ private fun DashboardContent(
                         isRecheckPending = isRecheckPending, problemKey = problemKey,
                         onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAck = onAck, onRecheck = onRecheck,
+                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = state.problems.size, lastUpdated = state.lastUpdated, stale = false) },
                         isRefreshing = false, onRefresh = onRetry)
                 }
@@ -495,6 +536,7 @@ private fun ProblemList(
     onLongPress: (String) -> Unit,
     onAck: (String) -> Unit,
     onRecheck: (String) -> Unit,
+    onUnack: (String) -> Unit = {},
     header: @Composable () -> Unit,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
@@ -533,6 +575,7 @@ private fun ProblemList(
                         }
                         context.startActivity(android.content.Intent.createChooser(intent, "Share alert"))
                     },
+                    onUnack = if (problem.acknowledged || locallyAcked) { { onUnack(key) } } else null,
                     onToggleSelect = { onToggleSelect(key) },
                     onLongPress = { onLongPress(key) },
                     onAck = { onAck(key) },

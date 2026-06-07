@@ -149,9 +149,13 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 val allProblems = deferreds.flatMap { it.first }
                     .sortedWith(compareBy(
                         { severityRank(it) },
-                        // Within same severity: unacked / not-in-downtime first (Goal 6)
+                        // NEW problems (state changed within last 15 min) first within severity
+                        { if ((it.lastStateChange ?: 0L) > now - 15 * 60 * 1_000L) 0 else 1 },
+                        // Unacked and not-in-downtime before acked/downtime
                         { if (it.acknowledged || it.scheduledDowntimeDepth > 0) 1 else 0 },
-                        // Newer state changes first within same severity band
+                        // Notifications-enabled before disabled
+                        { if (it.notificationsEnabled) 0 else 1 },
+                        // Newer state changes first within the band
                         { -(it.lastStateChange ?: 0L) },
                         { it.hostName },
                         { serviceNameOf(it) },
@@ -362,6 +366,100 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 refreshAfterCommand()
             } catch (e: Exception) {
                 commandState = CommandState.Error(e.message ?: "ACK failed")
+            } finally {
+                deactivateKeys(activeKeys)
+            }
+        }
+    }
+
+    // ── Unacknowledge ─────────────────────────────────────────────────────────
+
+    /** Single-instance remove-ACK with two-layer dedup. */
+    fun unacknowledgeProblems(
+        instance: NagiosInstance,
+        problems: List<NagiosProblem>,
+        commandSettings: CommandSettings,
+    ) {
+        val toSend = problems.filter {
+            it.acknowledged || localAcknowledgedMap.containsKey(localAckKey(instance.id, it))
+        }
+        if (toSend.isEmpty()) {
+            commandState = CommandState.Success("No acknowledged alerts selected")
+            return
+        }
+        cleanupRecentCommands()
+        val fresh = toSend.distinctBy { it.uniqueId }
+            .filter { !isCommandBlocked("unack", instance.id, it) }
+        if (fresh.isEmpty()) {
+            commandState = CommandState.Success("Unack already submitted")
+            return
+        }
+        val activeKeys = activateKeys("unack", instance.id, fresh)
+        commandState = CommandState.Loading
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { api.unacknowledgeProblems(instance, fresh, commandSettings) }
+                fresh.forEach { localAcknowledgedMap.remove(localAckKey(instance.id, it)) }
+                AckSuppressCache.removeKeys(
+                    appContext,
+                    fresh.map { AckSuppressCache.suppressKey(instance.id, it) }.toSet(),
+                )
+                recordCompleted("unack", instance.id, fresh)
+                commandState = CommandState.Success(unackMsg(fresh.size))
+                refreshAfterCommand()
+            } catch (e: Exception) {
+                commandState = CommandState.Error(sanitizeError(e.message))
+            } finally {
+                deactivateKeys(activeKeys)
+            }
+        }
+    }
+
+    /** ALL-mode remove-ACK — routes each problem to its own instance; two-layer dedup. */
+    fun unacknowledgeProblems(
+        allInstances: List<NagiosInstance>,
+        problems: List<NagiosProblem>,
+        commandSettings: CommandSettings,
+    ) {
+        val toSend = problems.filter { p ->
+            p.acknowledged || localAcknowledgedMap.containsKey(localAckKey(p.instanceId, p))
+        }
+        if (toSend.isEmpty()) {
+            commandState = CommandState.Success("No acknowledged alerts selected")
+            return
+        }
+        cleanupRecentCommands()
+        val fresh = toSend.distinctBy { it.instanceId + SEP + it.uniqueId }
+            .filter { !isCommandBlocked("unack", it.instanceId, it) }
+        if (fresh.isEmpty()) {
+            commandState = CommandState.Success("Unack already submitted")
+            return
+        }
+        val instanceMap = allInstances.associateBy { it.id }
+        val grouped = fresh.groupBy { it.instanceId }
+        val activeKeys = HashSet<String>()
+        grouped.forEach { (id, group) ->
+            if (instanceMap.containsKey(id)) activeKeys.addAll(activateKeys("unack", id, group))
+        }
+        commandState = CommandState.Loading
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    grouped.forEach { (id, group) ->
+                        val instance = instanceMap[id] ?: return@forEach
+                        api.unacknowledgeProblems(instance, group, commandSettings)
+                    }
+                }
+                fresh.forEach { localAcknowledgedMap.remove(localAckKey(it.instanceId, it)) }
+                AckSuppressCache.removeKeys(
+                    appContext,
+                    fresh.map { AckSuppressCache.suppressKey(it.instanceId, it) }.toSet(),
+                )
+                grouped.forEach { (id, group) -> recordCompleted("unack", id, group) }
+                commandState = CommandState.Success(unackMsg(fresh.size))
+                refreshAfterCommand()
+            } catch (e: Exception) {
+                commandState = CommandState.Error(sanitizeError(e.message))
             } finally {
                 deactivateKeys(activeKeys)
             }
@@ -614,6 +712,8 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun recheckMsg(count: Int) = "Recheck submitted for $count problem${if (count != 1) "s" else ""}"
+
+    private fun unackMsg(count: Int) = "Removed ACK from $count alert${if (count != 1) "s" else ""}"
 
     private fun sanitizeError(msg: String?): String =
         (msg ?: "Unknown error")

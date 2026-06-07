@@ -44,6 +44,16 @@ object AckSuppressCache {
         return (System.currentTimeMillis() - ts) < ACK_SUPPRESS_TTL_MS
     }
 
+    /** Remove specific keys from the suppress cache when the user removes an ACK. */
+    fun removeKeys(context: Context, keys: Set<String>) {
+        if (keys.isEmpty()) return
+        val prefs = prefs(context)
+        val existing = load(prefs)
+        if (existing.isEmpty()) return
+        val updated = existing - keys
+        prefs.edit().putString(KEY, gson.toJson(updated)).apply()
+    }
+
     /**
      * Evict expired entries.  Call once per poll cycle to keep the store small.
      * No-op if nothing has expired.

@@ -47,6 +47,7 @@ fun ProblemCard(
     onOpenInNagios: (() -> Unit)? = null,
     onToggleSelect: () -> Unit,
     onLongPress: () -> Unit,
+    onUnack: (() -> Unit)? = null,
     onAck: () -> Unit,
     onRecheck: () -> Unit,
 ) {
@@ -132,6 +133,7 @@ fun ProblemCard(
                     isPendingAck = isPendingAck,
                     instanceName = instanceName,
                     isRecheckPending = isRecheckPending,
+                    onUnack = onUnack,
                     onAck = onAck,
                     onRecheck = onRecheck,
                     onOpenDetail = onOpenDetail,
@@ -152,6 +154,7 @@ private fun ProblemCardContent(
     isPendingAck: Boolean,
     instanceName: String = "",
     isRecheckPending: Boolean = false,
+    onUnack: (() -> Unit)? = null,
     onAck: () -> Unit = {},
     onRecheck: () -> Unit = {},
     onOpenDetail: (() -> Unit)? = null,
@@ -224,6 +227,12 @@ private fun ProblemCardContent(
                         text = { Text("Recheck") },
                         onClick = { menuExpanded = false; onRecheck() },
                     )
+                    onUnack?.let {
+                        DropdownMenuItem(
+                            text = { Text("Remove ACK") },
+                            onClick = { menuExpanded = false; it() },
+                        )
+                    }
                     onCopyOutput?.let {
                         DropdownMenuItem(
                             text = { Text("Copy output") },
@@ -302,18 +311,13 @@ private fun ProblemCardContent(
             }
         } else if (lastCheckMs != null) {
             val ageMs = now - lastCheckMs
-            val staleLabel = checkStalenessLabel(ageMs, problem.nextCheck)
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Checked ${checkAge(ageMs)} · ${checkTime(lastCheckMs)}$stateForSuffix",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (staleLabel != null) CheckStaleBadge(staleLabel)
-            }
+            // CHECK OVERDUE badge is omitted on collapsed cards — overdue info is shown in the
+            // expanded section (Next check row) and on the Details screen.
+            Text(
+                "Checked ${checkAge(ageMs)} · ${checkTime(lastCheckMs)}$stateForSuffix",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         } else if (stateForSuffix.isNotEmpty()) {
             Text(
                 stateForSuffix.removePrefix(" · "),
@@ -424,24 +428,7 @@ private fun CheckDetailRow(label: String, value: String) {
     }
 }
 
-/** Check-overdue/old badge — replaces generic "STALE" (Goal 3). */
-@Composable
-private fun CheckStaleBadge(label: String) {
-    Surface(
-        shape = RoundedCornerShape(4.dp),
-        color = Color(0xFFF9A825).copy(alpha = 0.18f),
-        contentColor = Color(0xFFB36B00),
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-        )
-    }
-}
-
-/** Generic compact state/action badge (Goal 5). */
+/** Generic compact state/action badge. */
 @Composable
 private fun StateBadge(label: String, textColor: Color, bgColor: Color) {
     Surface(shape = RoundedCornerShape(4.dp), color = bgColor, contentColor = textColor) {
@@ -454,19 +441,19 @@ private fun StateBadge(label: String, textColor: Color, bgColor: Color) {
     }
 }
 
-/** "NEW" chip shown when the state changed within the last 15 minutes (Goal 6). */
+/** "NEW" chip — solid teal bg + white text for visibility on all card colours (light/dark). */
 @Composable
 private fun NewBadge() {
     Surface(
         shape = RoundedCornerShape(4.dp),
-        color = Color(0xFF1B5E20).copy(alpha = 0.15f),
-        contentColor = Color(0xFF1B5E20),
+        color = Color(0xFF00897B),   // teal 600 — contrasts with critical red, warning yellow, unknown purple
+        contentColor = Color.White,
     ) {
         Text(
             "NEW",
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
         )
     }
 }
@@ -545,26 +532,7 @@ private fun hostColors(status: Int, dark: Boolean): Pair<Color, Color> = when (s
         else Color(0xFFE2E3E5) to Color(0xFF383D41)
 }
 
-// Thresholds (Goal 3, 6)
-private const val STALE_CHECK_THRESHOLD_MS = 15 * 60 * 1_000L
-private const val NEW_STATE_THRESHOLD_MS   = 15 * 60 * 1_000L
-
-/**
- * Returns the badge label for a stale/overdue check, or null when the check is fresh.
- *
- * Priority:
- *  1. If nextCheck is known and now > nextCheck → "CHECK OVERDUE"
- *  2. If lastCheck age > 15 min → "CHECK OLD" (best-effort, interval unknown)
- *  3. Otherwise → null (fresh, no badge)
- *
- * TODO: use (nextCheck - lastCheck) as the expected interval so short-interval checks
- *   (30 s) stale faster and long-interval ones (24 h) are not falsely marked.
- */
-private fun checkStalenessLabel(ageMs: Long, nextCheckMs: Long?): String? {
-    if (nextCheckMs != null && System.currentTimeMillis() > nextCheckMs) return "CHECK OVERDUE"
-    if (ageMs > STALE_CHECK_THRESHOLD_MS) return "CHECK OLD"
-    return null
-}
+private const val NEW_STATE_THRESHOLD_MS = 15 * 60 * 1_000L
 
 /** Format a duration in the future — "in 3m", "in 2h 5m". */
 internal fun checkIn(durationMs: Long): String {
