@@ -147,7 +147,15 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 }.awaitAll()
 
                 val allProblems = deferreds.flatMap { it.first }
-                    .sortedWith(compareBy({ severityRank(it) }, { it.hostName }, { serviceNameOf(it) }))
+                    .sortedWith(compareBy(
+                        { severityRank(it) },
+                        // Within same severity: unacked / not-in-downtime first (Goal 6)
+                        { if (it.acknowledged || it.scheduledDowntimeDepth > 0) 1 else 0 },
+                        // Newer state changes first within same severity band
+                        { -(it.lastStateChange ?: 0L) },
+                        { it.hostName },
+                        { serviceNameOf(it) },
+                    ))
                 val errors = deferreds.mapNotNull { it.second }
                 val summaries = deferreds.map { it.third }
 

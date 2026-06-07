@@ -253,27 +253,39 @@ private fun ProblemCardContent(
             }
         }
 
-        // ── Severity / ACK chips — status and ACK only, no instance clutter ──
+        // ── Status + state/action chips ──────────────────────────────────────
         Spacer(Modifier.height(4.dp))
+        // NEW chip: state changed within the last 15 minutes
+        val isNew = problem.lastStateChange?.let {
+            (System.currentTimeMillis() - it) < NEW_STATE_THRESHOLD_MS
+        } ?: false
         Row(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
         ) {
             when (problem) {
                 is NagiosProblem.ServiceProblem -> StatusBadge(serviceStatusLabel(problem.status))
                 is NagiosProblem.HostProblem    -> StatusBadge(hostStatusLabel(problem.status))
             }
+            if (isNew) NewBadge()
             if (isAcknowledged || isPendingAck) {
                 AckBadge(pending = isPendingAck && !problem.acknowledged)
             }
+            if (problem.scheduledDowntimeDepth > 0) StateBadge("DT", Color(0xFF1565C0), Color(0xFFE3F2FD))
+            if (problem is NagiosProblem.ServiceProblem && problem.hostScheduledDowntimeDepth > 0) {
+                StateBadge("HOST DT", Color(0xFF1565C0), Color(0xFFE3F2FD))
+            }
+            if (!problem.notificationsEnabled) StateBadge("NOTIF OFF", Color(0xFF616161), Color(0xFFF5F5F5))
+            if (!problem.checksEnabled) StateBadge("CHECKS OFF", Color(0xFF616161), Color(0xFFF5F5F5))
+            if (problem.isFlapping) StateBadge("FLAP", Color(0xFF6A1B9A), Color(0xFFEDE7F6))
+            if (problem.isSoftState) StateBadge("SOFT", Color(0xFF455A64), Color(0xFFECEFF1))
         }
 
         // ── Check timing line ─────────────────────────────────────────────────
         val lastCheckMs = problem.lastCheck
-        // State duration — appended to the timing line when lastStateChange is available
-        val stateForSuffix = problem.lastStateChange?.let {
-            " · Since ${checkDuration(System.currentTimeMillis() - it)}"
-        } ?: ""
+        val now = System.currentTimeMillis()
+        val stateForSuffix = problem.lastStateChange?.let { " · Since ${checkDuration(now - it)}" } ?: ""
         Spacer(Modifier.height(3.dp))
         if (isRecheckPending) {
             Text(
@@ -283,14 +295,14 @@ private fun ProblemCardContent(
             )
             if (lastCheckMs != null) {
                 Text(
-                    "Last check: ${checkTime(lastCheckMs)} · ${checkAge(System.currentTimeMillis() - lastCheckMs)}$stateForSuffix",
+                    "Last check: ${checkTime(lastCheckMs)} · ${checkAge(now - lastCheckMs)}$stateForSuffix",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         } else if (lastCheckMs != null) {
-            val ageMs = System.currentTimeMillis() - lastCheckMs
-            val isStale = isCheckStale(ageMs, problem.nextCheck)
+            val ageMs = now - lastCheckMs
+            val staleLabel = checkStalenessLabel(ageMs, problem.nextCheck)
             Row(
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -300,10 +312,9 @@ private fun ProblemCardContent(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (isStale) StaleBadge()
+                if (staleLabel != null) CheckStaleBadge(staleLabel)
             }
         } else if (stateForSuffix.isNotEmpty()) {
-            // No lastCheck but we have state duration — show it alone
             Text(
                 stateForSuffix.removePrefix(" · "),
                 style = MaterialTheme.typography.labelSmall,
@@ -346,14 +357,15 @@ private fun CheckMetadataSection(problem: NagiosProblem) {
             CheckDetailRow("Last check", "${checkTime(ts)}  (${checkAge(now - ts)})")
         }
         problem.nextCheck?.let { ts ->
-            val inFuture = ts > now
-            CheckDetailRow("Next check", if (inFuture) "in ${checkAge(ts - now)}" else checkTime(ts))
+            // Use distinct wording for future vs overdue (Goal 2)
+            val nextText = if (ts > now) checkIn(ts - now) else checkOverdue(now - ts)
+            CheckDetailRow("Next check", nextText)
         }
         problem.lastStateChange?.let { ts ->
-            CheckDetailRow("State since", checkDuration(now - ts))
+            CheckDetailRow("State for", checkDuration(now - ts))
         }
         problem.lastHardStateChange?.let { ts ->
-            CheckDetailRow("Hard state since", "${checkTime(ts)}  (${checkDuration(now - ts)})")
+            CheckDetailRow("Hard state for", "${checkTime(ts)}  (${checkDuration(now - ts)})")
         }
         val attempt = problem.currentAttempt
         val maxAtt  = problem.maxAttempts
@@ -401,26 +413,57 @@ private fun CheckMetadataSection(problem: NagiosProblem) {
 
 @Composable
 private fun CheckDetailRow(label: String, value: String) {
-    Row {
+    Row(modifier = Modifier.fillMaxWidth()) {
         Text(
             "$label:",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(88.dp),
+            modifier = Modifier.width(110.dp),
         )
-        Text(value, style = MaterialTheme.typography.labelSmall)
+        Text(value, style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
     }
 }
 
+/** Check-overdue/old badge — replaces generic "STALE" (Goal 3). */
 @Composable
-private fun StaleBadge() {
+private fun CheckStaleBadge(label: String) {
     Surface(
         shape = RoundedCornerShape(4.dp),
         color = Color(0xFFF9A825).copy(alpha = 0.18f),
         contentColor = Color(0xFFB36B00),
     ) {
         Text(
-            "STALE",
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+        )
+    }
+}
+
+/** Generic compact state/action badge (Goal 5). */
+@Composable
+private fun StateBadge(label: String, textColor: Color, bgColor: Color) {
+    Surface(shape = RoundedCornerShape(4.dp), color = bgColor, contentColor = textColor) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+        )
+    }
+}
+
+/** "NEW" chip shown when the state changed within the last 15 minutes (Goal 6). */
+@Composable
+private fun NewBadge() {
+    Surface(
+        shape = RoundedCornerShape(4.dp),
+        color = Color(0xFF1B5E20).copy(alpha = 0.15f),
+        contentColor = Color(0xFF1B5E20),
+    ) {
+        Text(
+            "NEW",
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
@@ -502,22 +545,45 @@ private fun hostColors(status: Int, dark: Boolean): Pair<Color, Color> = when (s
         else Color(0xFFE2E3E5) to Color(0xFF383D41)
 }
 
-// Default stale threshold: 15 minutes without a Nagios re-check.
+// Thresholds (Goal 3, 6)
 private const val STALE_CHECK_THRESHOLD_MS = 15 * 60 * 1_000L
+private const val NEW_STATE_THRESHOLD_MS   = 15 * 60 * 1_000L
 
 /**
- * Returns true when the last check result is considered stale.
+ * Returns the badge label for a stale/overdue check, or null when the check is fresh.
  *
- * Currently uses a fixed 15-minute threshold.
+ * Priority:
+ *  1. If nextCheck is known and now > nextCheck → "CHECK OVERDUE"
+ *  2. If lastCheck age > 15 min → "CHECK OLD" (best-effort, interval unknown)
+ *  3. Otherwise → null (fresh, no badge)
  *
- * TODO: use [nextCheckMs] to derive a smarter threshold — if nextCheck is known,
- *   mark stale when ageMs > (expectedInterval * 2), where expectedInterval =
- *   nextCheckMs - lastCheckMs.  This handles cases where Nagios has a very short
- *   check interval (e.g. 30 s) or a very long one (e.g. 24 h).
+ * TODO: use (nextCheck - lastCheck) as the expected interval so short-interval checks
+ *   (30 s) stale faster and long-interval ones (24 h) are not falsely marked.
  */
-private fun isCheckStale(ageMs: Long, @Suppress("UNUSED_PARAMETER") nextCheckMs: Long?): Boolean {
-    // TODO: factor in nextCheckMs when implementing interval-aware staleness.
-    return ageMs > STALE_CHECK_THRESHOLD_MS
+private fun checkStalenessLabel(ageMs: Long, nextCheckMs: Long?): String? {
+    if (nextCheckMs != null && System.currentTimeMillis() > nextCheckMs) return "CHECK OVERDUE"
+    if (ageMs > STALE_CHECK_THRESHOLD_MS) return "CHECK OLD"
+    return null
+}
+
+/** Format a duration in the future — "in 3m", "in 2h 5m". */
+internal fun checkIn(durationMs: Long): String {
+    val sec = durationMs / 1000
+    return when {
+        sec < 60   -> "in ${sec}s"
+        sec < 3600 -> "in ${sec / 60}m"
+        else       -> "in ${sec / 3600}h ${(sec % 3600) / 60}m"
+    }
+}
+
+/** Format an overdue duration — "overdue by 3m". */
+internal fun checkOverdue(ageMs: Long): String {
+    val sec = ageMs / 1000
+    return when {
+        sec < 60   -> "overdue by ${sec}s"
+        sec < 3600 -> "overdue by ${sec / 60}m"
+        else       -> "overdue by ${sec / 3600}h ${(sec % 3600) / 60}m"
+    }
 }
 
 internal fun checkTime(epochMs: Long): String =

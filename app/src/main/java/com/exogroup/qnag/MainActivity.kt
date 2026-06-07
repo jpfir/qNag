@@ -34,7 +34,12 @@ private sealed class AppScreen {
     object AddInstance : AppScreen()
     data class Dashboard(val instance: NagiosInstance) : AppScreen()
     data class Settings(val fromInstance: NagiosInstance) : AppScreen()
-    data class ProblemDetail(val problem: NagiosProblem, val instance: NagiosInstance?) : AppScreen()
+    data class ProblemDetail(
+        val problem: NagiosProblem,
+        val instance: NagiosInstance?,
+        /** The Dashboard instance that was active — used to restore the correct scope on back. */
+        val fromDashboardInstance: NagiosInstance,
+    ) : AppScreen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -131,7 +136,11 @@ class MainActivity : ComponentActivity() {
                                     appSettings = updated
                                 },
                                 onOpenProblemDetail = { problem, instance ->
-                                    screen = AppScreen.ProblemDetail(problem, instance)
+                                    screen = AppScreen.ProblemDetail(
+                                        problem = problem,
+                                        instance = instance,
+                                        fromDashboardInstance = s.instance,
+                                    )
                                 },
                             )
                         }
@@ -179,10 +188,9 @@ class MainActivity : ComponentActivity() {
                                 instance = s.instance,
                                 commandSettings = appSettings.commandSettings,
                                 onBack = {
-                                    val enabled = instances.filter { it.enabled }
-                                    screen = if (enabled.isNotEmpty())
-                                        AppScreen.Dashboard(enabled.first())
-                                    else AppScreen.AddInstance
+                                    // Return to the same Dashboard instance/scope that was
+                                    // active when Details was opened (preserves ALL-mode etc.)
+                                    screen = AppScreen.Dashboard(s.fromDashboardInstance)
                                 },
                             )
                         }

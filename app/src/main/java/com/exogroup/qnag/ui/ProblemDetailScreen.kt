@@ -240,8 +240,9 @@ private fun DetailMetadataFull(problem: NagiosProblem) {
             DetailRow("Last check", "${checkTime(ts)}  (${checkAge(now - ts)})")
         }
         problem.nextCheck?.let { ts ->
-            val inFuture = ts > now
-            DetailRow("Next check", if (inFuture) "in ${checkAge(ts - now)}" else checkTime(ts))
+            // Goal 2: distinct wording for future vs past next-check
+            val nextText = if (ts > now) checkIn(ts - now) else checkOverdue(now - ts)
+            DetailRow("Next check", nextText)
         }
         problem.lastStateChange?.let { ts ->
             DetailRow("State for", checkDuration(now - ts))

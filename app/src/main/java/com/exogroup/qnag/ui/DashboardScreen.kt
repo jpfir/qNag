@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -240,6 +241,69 @@ fun DashboardScreen(
                         }
                         IconButton(onClick = { doRecheck(selectedProblems); selectedIds = emptySet() }) {
                             Icon(Icons.Default.Refresh, "Recheck selected")
+                        }
+                        // Multi-select overflow menu (Goal 8)
+                        val context = androidx.compose.ui.platform.LocalContext.current
+                        val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                        var multiMenuExpanded by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { multiMenuExpanded = true }) {
+                                Icon(Icons.Default.MoreVert, "More actions")
+                            }
+                            DropdownMenu(expanded = multiMenuExpanded, onDismissRequest = { multiMenuExpanded = false }) {
+                                // Details — only when exactly one problem is selected
+                                if (selectedProblems.size == 1) {
+                                    DropdownMenuItem(
+                                        text = { Text("Details") },
+                                        onClick = {
+                                            multiMenuExpanded = false
+                                            selectedIds = emptySet()
+                                            selectedProblems.firstOrNull()?.let { p ->
+                                                val instId = p.instanceId.ifEmpty {
+                                                    (selectedInstance as? InstanceSelection.Single)?.instance?.id ?: instance.id
+                                                }
+                                                val inst = enabledInstances.find { it.id == instId }
+                                                onOpenProblemDetail(p, inst)
+                                            }
+                                        },
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("Acknowledge selected") },
+                                    onClick = { multiMenuExpanded = false; doAck(selectedProblems); selectedIds = emptySet() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Recheck selected") },
+                                    onClick = { multiMenuExpanded = false; doRecheck(selectedProblems); selectedIds = emptySet() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Copy summaries") },
+                                    onClick = {
+                                        multiMenuExpanded = false
+                                        val text = selectedProblems.joinToString("\n\n") { buildAlertSummary(it) }
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(text))
+                                        selectedIds = emptySet()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Share summaries") },
+                                    onClick = {
+                                        multiMenuExpanded = false
+                                        val text = selectedProblems.joinToString("\n\n") { buildAlertSummary(it) }
+                                        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(android.content.Intent.EXTRA_TEXT, text)
+                                        }
+                                        context.startActivity(android.content.Intent.createChooser(intent, "Share alerts"))
+                                        selectedIds = emptySet()
+                                    },
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Clear selection") },
+                                    onClick = { multiMenuExpanded = false; selectedIds = emptySet() },
+                                )
+                            }
                         }
                     } else {
                         IconButton(onClick = onAddNewInstance) { Icon(Icons.Default.Add, "Add instance") }
