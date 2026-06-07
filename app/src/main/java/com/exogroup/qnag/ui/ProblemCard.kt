@@ -195,19 +195,27 @@ private fun ProblemCardContent(
             }
         }
 
-        // ── Check timing line (Goal 2 & 3) ───────────────────────────────────
+        // ── Check timing line ─────────────────────────────────────────────────
         val lastCheckMs = problem.lastCheck
+        Spacer(Modifier.height(3.dp))
         if (isRecheckPending) {
-            Spacer(Modifier.height(3.dp))
+            // Pending: show the "waiting" notice plus the previous check time so the user
+            // knows the displayed plugin output is still from the old check (Goal 1).
             Text(
                 "⏳ Recheck pending — waiting for fresh result",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.tertiary,
             )
+            if (lastCheckMs != null) {
+                Text(
+                    "Last check: ${checkTime(lastCheckMs)} · ${checkAge(System.currentTimeMillis() - lastCheckMs)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         } else if (lastCheckMs != null) {
             val ageMs = System.currentTimeMillis() - lastCheckMs
-            val isStale = ageMs > STALE_CHECK_THRESHOLD_MS
-            Spacer(Modifier.height(3.dp))
+            val isStale = isCheckStale(ageMs, problem.nextCheck)
             Row(
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -232,10 +240,11 @@ private fun ProblemCardContent(
             )
         }
 
-        // ── Expanded check metadata (Goal 2) ─────────────────────────────────
+        // ── Expanded check metadata ───────────────────────────────────────────
         if (isExpanded) {
             val hasMetadata = problem.lastCheck != null || problem.nextCheck != null ||
-                problem.lastStateChange != null || problem.currentAttempt != null || problem.checkType != null
+                problem.lastStateChange != null || problem.lastHardStateChange != null ||
+                problem.currentAttempt != null || problem.checkType != null
             if (hasMetadata) {
                 Spacer(Modifier.height(8.dp))
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -248,16 +257,21 @@ private fun ProblemCardContent(
 
 @Composable
 private fun CheckMetadataSection(problem: NagiosProblem) {
+    val now = System.currentTimeMillis()
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         problem.lastCheck?.let { ts ->
-            CheckDetailRow("Last check", "${checkTime(ts)}  (${checkAge(System.currentTimeMillis() - ts)})")
+            CheckDetailRow("Last check", "${checkTime(ts)}  (${checkAge(now - ts)})")
         }
         problem.nextCheck?.let { ts ->
-            val inFuture = ts > System.currentTimeMillis()
-            CheckDetailRow("Next check", if (inFuture) "in ${checkAge(ts - System.currentTimeMillis())}" else checkTime(ts))
+            val inFuture = ts > now
+            CheckDetailRow("Next check", if (inFuture) "in ${checkAge(ts - now)}" else checkTime(ts))
         }
         problem.lastStateChange?.let { ts ->
-            CheckDetailRow("State since", checkDuration(System.currentTimeMillis() - ts))
+            CheckDetailRow("State since", checkDuration(now - ts))
+        }
+        // Last hard state change — Goal 2
+        problem.lastHardStateChange?.let { ts ->
+            CheckDetailRow("Hard state since", "${checkTime(ts)}  (${checkDuration(now - ts)})")
         }
         val attempt = problem.currentAttempt
         val maxAtt  = problem.maxAttempts
@@ -372,8 +386,23 @@ private fun hostColors(status: Int, dark: Boolean): Pair<Color, Color> = when (s
         else Color(0xFFE2E3E5) to Color(0xFF383D41)
 }
 
-// Check is considered stale after 15 minutes without a Nagios re-check
+// Default stale threshold: 15 minutes without a Nagios re-check.
 private const val STALE_CHECK_THRESHOLD_MS = 15 * 60 * 1_000L
+
+/**
+ * Returns true when the last check result is considered stale.
+ *
+ * Currently uses a fixed 15-minute threshold.
+ *
+ * TODO: use [nextCheckMs] to derive a smarter threshold — if nextCheck is known,
+ *   mark stale when ageMs > (expectedInterval * 2), where expectedInterval =
+ *   nextCheckMs - lastCheckMs.  This handles cases where Nagios has a very short
+ *   check interval (e.g. 30 s) or a very long one (e.g. 24 h).
+ */
+private fun isCheckStale(ageMs: Long, @Suppress("UNUSED_PARAMETER") nextCheckMs: Long?): Boolean {
+    // TODO: factor in nextCheckMs when implementing interval-aware staleness.
+    return ageMs > STALE_CHECK_THRESHOLD_MS
+}
 
 private fun checkTime(epochMs: Long): String =
     SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(epochMs))
