@@ -17,6 +17,7 @@ import com.exogroup.qnag.data.NagiosApi
 import com.exogroup.qnag.data.NagiosInstance
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
+import com.exogroup.qnag.data.problemComparator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -149,19 +150,7 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 }.awaitAll()
 
                 val allProblems = deferreds.flatMap { it.first }
-                    .sortedWith(compareBy(
-                        { severityRank(it) },
-                        // NEW problems (state changed within last 15 min) first within severity
-                        { if ((it.lastStateChange ?: 0L) > now - 15 * 60 * 1_000L) 0 else 1 },
-                        // Unacked and not-in-downtime before acked/downtime
-                        { if (it.acknowledged || it.scheduledDowntimeDepth > 0) 1 else 0 },
-                        // Notifications-enabled before disabled
-                        { if (it.notificationsEnabled) 0 else 1 },
-                        // Newer state changes first within the band
-                        { -(it.lastStateChange ?: 0L) },
-                        { it.hostName },
-                        { serviceNameOf(it) },
-                    ))
+                    .sortedWith(problemComparator(now))
                 val errors = deferreds.mapNotNull { it.second }
                 val summaries = deferreds.map { it.third }
 
@@ -782,18 +771,6 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         is DashboardState.Error -> s.previousProblems
         else -> null
     }
-
-    private fun severityRank(p: NagiosProblem): Int = when {
-        p is NagiosProblem.HostProblem && p.status == NagiosStatus.HOST_DOWN -> 0
-        p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_CRITICAL -> 1
-        p is NagiosProblem.HostProblem && p.status == NagiosStatus.HOST_UNREACHABLE -> 2
-        p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_UNKNOWN -> 3
-        p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_WARNING -> 4
-        else -> 5
-    }
-
-    private fun serviceNameOf(p: NagiosProblem): String =
-        if (p is NagiosProblem.ServiceProblem) p.serviceName else ""
 
     private fun buildAckMsg(totalFresh: Int, hostCount: Int, addedServiceCount: Int): String {
         return if (addedServiceCount > 0 && hostCount > 0) {

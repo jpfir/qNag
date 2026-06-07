@@ -9,15 +9,18 @@ import org.junit.runner.RunWith
 import org.junit.Assert.*
 
 /**
- * Instrumented test, which will execute on an Android device.
+ * Minimal instrumentation smoke test — verifies that the instrumentation framework is
+ * wired correctly and the package name matches the declared application ID.
  *
- * See [testing documentation](http://d.android.com/tools/testing).
+ * This does NOT validate any qNag behaviour.  All business-logic tests are JVM unit tests
+ * under src/test/ (run with ./gradlew test, no device required).  Real instrumentation tests
+ * (SharedPreferences, notifications, sound, Nagios commands) can be added here once Robolectric
+ * or an on-device test harness is in place.
  */
 @RunWith(AndroidJUnit4::class)
-class ExampleInstrumentedTest {
+class QNagInstrumentedSmokeTest {
     @Test
-    fun useAppContext() {
-        // Context of the app under test.
+    fun instrumentationTargetsCorrectPackage() {
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
         assertEquals("com.exogroup.qnag", appContext.packageName)
     }

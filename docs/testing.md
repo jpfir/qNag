@@ -1,3 +1,56 @@
+# qNag Testing
+
+## Automated JVM Unit Tests
+
+Run with `./gradlew test` (no device required, runs in CI on every PR).
+
+| Test class | What is covered |
+|---|---|
+| `NotificationFilterTest` | Notification decisions: state enabled/disabled, soft-state, downtime, ACK suppression, ACK re-notification after threshold, Tier 2+ delay before/after threshold, per-state Tier 2+ thresholds, decision ordering |
+| `FingerprintTest` | `problemFingerprint` U+001F separator, `instanceFingerprintPrefix` scoping, `notificationId` stability across status changes, `fetchFailureNotificationId` uniqueness, `AckAgeStore`/`ProblemAgeStore` key contracts |
+| `FilterSettingsTest` | `applyFilters` quick filters (C/W/D equivalent), all status/state/host-context filters, regex normal and reversed, invalid-regex safe handling, `validateRegex` |
+| `VisualStateTest` | `deriveVisualState` priority order (CRITICAL > FETCH_FAILURE > WARNING > UNKNOWN > OK), `visualStateColor` uniqueness and dominant-channel checks |
+| `AlertSortingTest` | `severityRank` values, sort order: severity, recency, acked/downtime/notification-enabled, alphabetic tiebreaker |
+| `NagiosTimestampTest` | `parseEpochMs`: null/zero/negative → null; 10-digit seconds → millis; 13-digit millis → unchanged; invalid strings → null |
+| `EventLogSanitizeTest` | `EventLog.sanitize`: credentialed URL redaction (http/https), multiple-URL redaction, safe-content preservation (instance name, host/service, HTTP status, command type), 500-char truncation |
+| `QNagSmokeTest` | End-to-end: critical service allowed, warning service suppressed by default |
+
+The automated tests cover pure/business logic that does not require an Android device.
+They will **fail** if Tier 2+ delay logic, ACK re-notification, fingerprint separators,
+visual-state priority, sort order, timestamp parsing, or Event Log sanitization regress.
+
+### What is NOT covered by automated tests
+
+#### Requires an Android Context (Robolectric not added)
+
+- **`ProblemAgeStore` / `AckAgeStore` write-through** — the SharedPreferences record-if-absent
+  and getFirstSeen paths are not exercised by JVM tests.  `NotificationFilterTest` injects
+  first-seen timestamps via the `testProblemFirstSeenFn` / `testAckFirstSeenFn` parameters
+  to cover the decision logic, but the store's own read/write correctness is untested.
+- **`ProblemAgeStore.pruneStaleKeys()` multi-instance safety** — a past bug caused pruning
+  with only one instance's active keys to delete another instance's stored first-seen entries.
+  This regression can only be reproduced with real SharedPreferences.  Until Robolectric is
+  added, validate manually after changing any pruning logic:
+  1. Add two Nagios instances with distinct problems.
+  2. Leave both running for > 30 min so Tier 2+ first-seen entries accumulate.
+  3. Remove one instance.
+  4. Verify that the surviving instance's Tier 2+ badges still appear correctly after the
+     next poll (pruning must not have deleted its keys).
+- **`AckAgeStore.recordIfAbsent()` persistence** — ACK re-notification relies on the first-seen
+  timestamp surviving across app restarts; this is only guaranteed by testing with real prefs.
+
+#### Requires a real Android device / OEM validation
+
+- Exact alarm behavior, WorkManager scheduling, foreground service lifecycle
+- Notification permission, channel, DND, vibrate-mode, battery-optimization behavior
+- In-app sound playback and alarm audio stream routing
+- Nagios command submission (ACK/recheck/downtime) against a live Nagios instance
+- OEM-specific background restrictions and process survival
+
+See the manual checklist below for device validation steps.
+
+---
+
 # qNag Production Readiness Test Checklist
 
 > Before using qNag for on-call monitoring, validate Reliability Mode, notifications,

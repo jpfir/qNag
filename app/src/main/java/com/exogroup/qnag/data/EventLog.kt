@@ -112,8 +112,18 @@ object EventLog {
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    /** Strip credentialed URLs and truncate. Call before writing any message. */
-    fun sanitize(message: String): String =
-        message.replace(Regex("https?://[^/\\s]*@[^/\\s]*"), "[redacted-url]")
-               .take(500)
+    /** Strip sensitive content and truncate. Call before writing any message. */
+    fun sanitize(message: String): String = message
+        // Credentialed URLs: https?://user:pass@host
+        .replace(Regex("https?://[^/\\s]*@[^/\\s]*"), "[redacted-url]")
+        // HTTP auth headers
+        .replace(Regex("(?i)Authorization:\\s*\\S[^\\n\\r]*"), "Authorization: [redacted]")
+        // Cookie headers
+        .replace(Regex("(?i)Cookie:\\s*\\S[^\\n\\r]*"), "Cookie: [redacted]")
+        .replace(Regex("(?i)Set-Cookie:\\s*\\S[^\\n\\r]*"), "Set-Cookie: [redacted]")
+        // Custom auth header
+        .replace(Regex("(?i)X-Auth-Token:\\s*\\S[^\\n\\r]*"), "X-Auth-Token: [redacted]")
+        // URL query-string / form-body secrets
+        .replace(Regex("(?i)\\b(access_token|password|passwd|token)=[^&\\s\"'#]+"), "[redacted]")
+        .take(500)
 }

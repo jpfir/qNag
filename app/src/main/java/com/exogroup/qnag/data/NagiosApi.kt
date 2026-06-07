@@ -33,19 +33,7 @@ class NagiosApi {
             .map { it.copy(instanceId = instance.id, instanceName = instance.name) }
 
         val now = System.currentTimeMillis()
-        return (hosts + services).sortedWith(compareBy(
-            { severityRank(it) },
-            // NEW problems (state changed within last 15 min) first within severity
-            { if ((it.lastStateChange ?: 0L) > now - 15 * 60 * 1_000L) 0 else 1 },
-            // Unacked and not-in-downtime before acked/downtime
-            { if (it.acknowledged || it.scheduledDowntimeDepth > 0) 1 else 0 },
-            // Notifications-enabled before disabled
-            { if (it.notificationsEnabled) 0 else 1 },
-            // Newer state changes first within the band
-            { -(it.lastStateChange ?: 0L) },
-            { it.hostName },
-            { serviceNameOf(it) },
-        ))
+        return (hosts + services).sortedWith(problemComparator(now))
     }
 
     private fun fetchServiceProblems(baseUrl: String, credential: String): List<NagiosProblem.ServiceProblem> {
@@ -461,26 +449,8 @@ class NagiosApi {
             .replace(Regex("https?://[^/\\s]*@[^/\\s]*"), "[redacted-url]")
             .replace(Regex("\\s+"), " ")
 
-    /**
-     * Parse a Nagios timestamp field to epoch milliseconds.
-     *
-     * Nagios statusjson returns timestamps as epoch seconds (10-digit) or occasionally millis
-     * (13-digit).  Handles Int, Long, Double, and numeric String values gracefully.
-     * Returns null for missing, zero, or unparseable values.
-     */
-    private fun JSONObject.optEpochMs(key: String): Long? {
-        val raw = opt(key) ?: return null
-        val num: Long = when (raw) {
-            is Int    -> raw.toLong()
-            is Long   -> raw
-            is Double -> raw.toLong()
-            is String -> raw.toLongOrNull() ?: return null
-            else      -> return null
-        }
-        if (num <= 0) return null
-        // 10-digit = epoch seconds; threshold ~year 2286 as seconds
-        return if (num < 10_000_000_000L) num * 1000L else num
-    }
+    /** Delegates to the package-level [parseEpochMs] helper (testable without a network layer). */
+    private fun JSONObject.optEpochMs(key: String): Long? = parseEpochMs(opt(key))
 
     /**
      * Parse check_type: 0=active, 1=passive, 2=parent, 3=file, 4=other.
@@ -542,17 +512,7 @@ class NagiosApi {
         }
     }
 
-    private fun severityRank(p: NagiosProblem): Int = when {
-        p is NagiosProblem.HostProblem && p.status == NagiosStatus.HOST_DOWN -> 0
-        p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_CRITICAL -> 1
-        p is NagiosProblem.HostProblem && p.status == NagiosStatus.HOST_UNREACHABLE -> 2
-        p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_UNKNOWN -> 3
-        p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_WARNING -> 4
-        else -> 5
-    }
-
-    private fun serviceNameOf(p: NagiosProblem): String =
-        if (p is NagiosProblem.ServiceProblem) p.serviceName else ""
+    // severityRank and serviceNameOf are package-level in AlertSorting.kt
 
     private data class CsrfData(val cookieHeader: String, val nagFormId: String?)
 }

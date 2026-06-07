@@ -49,6 +49,12 @@ enum class NotificationDecisionReason {
  *
  * @param context Required for [ProblemAgeStore] / [AckAgeStore] lookups. Pass null to skip
  *   age-store checks (backward-compat path used by [shouldNotify] wrapper).
+ * @param testProblemFirstSeenFn Unit-test hook: supply a first-seen timestamp for Tier 2+ age
+ *   without an Android Context. When non-null, overrides both [problem.lastStateChange] and the
+ *   ProblemAgeStore lookup. Production callers leave this null.
+ * @param testAckFirstSeenFn Unit-test hook: supply a first-seen ACK timestamp without an Android
+ *   Context. When non-null, overrides both [problem.acknowledgementTime] and the AckAgeStore
+ *   lookup. Production callers leave this null.
  */
 fun evaluateNotificationDecision(
     instanceId: String,
@@ -56,6 +62,8 @@ fun evaluateNotificationDecision(
     settings: NotificationSettings,
     now: Long = System.currentTimeMillis(),
     context: Context? = null,
+    testProblemFirstSeenFn: ((String, NagiosProblem) -> Long?)? = null,
+    testAckFirstSeenFn: ((String, NagiosProblem) -> Long?)? = null,
 ): NotificationDecision {
 
     // ── 1. State enabled ──────────────────────────────────────────────────────
@@ -88,9 +96,17 @@ fun evaluateNotificationDecision(
 
     // ── 4. ACK handling ───────────────────────────────────────────────────────
     if (problem.acknowledged) {
-        if (settings.notifyAckedAfterEnabled && context != null) {
-            AckAgeStore.recordIfAbsent(context, instanceId, problem)
-            val ackFirstSeen = AckAgeStore.getFirstSeen(context, instanceId, problem)
+        if (settings.notifyAckedAfterEnabled) {
+            // Resolve the ACK timestamp.
+            // Priority: test hook (unit tests) → live AckAgeStore → Nagios-reported time.
+            val ackFirstSeen: Long? = when {
+                testAckFirstSeenFn != null -> testAckFirstSeenFn(instanceId, problem)
+                context != null -> {
+                    AckAgeStore.recordIfAbsent(context, instanceId, problem)
+                    AckAgeStore.getFirstSeen(context, instanceId, problem)
+                }
+                else -> problem.acknowledgementTime
+            }
             if (ackFirstSeen != null) {
                 val ackAgeMs = now - ackFirstSeen
                 val thresholdMs = settings.notifyAckedAfterMinutes * 60_000L
@@ -109,7 +125,7 @@ fun evaluateNotificationDecision(
                 )
             }
         }
-        // No re-notify enabled, or no context — apply the basic acknowledged guard
+        // Re-notify not enabled, or ackFirstSeen could not be determined — apply basic guard
         if (settings.notifyOnlyUnacknowledged)
             return NotificationDecision(false, NotificationDecisionReason.ACKED_SUPPRESSED)
         // notifyOnlyUnacknowledged=false: ACKed problems can still notify (fall through)
@@ -117,7 +133,7 @@ fun evaluateNotificationDecision(
 
     // ── 5. Tier 2+ delay ─────────────────────────────────────────────────────
     if (settings.tier2PlusEnabled) {
-        val alertAgeMs = resolveAlertAgeMs(instanceId, problem, now, context)
+        val alertAgeMs = resolveAlertAgeMs(instanceId, problem, now, context, testProblemFirstSeenFn)
         val requiredMs  = tier2DelayMs(problem, settings)
         if (alertAgeMs != null && alertAgeMs < requiredMs) {
             return NotificationDecision(
@@ -160,17 +176,23 @@ fun tier2DelayMs(problem: NagiosProblem, settings: NotificationSettings): Long {
 }
 
 /**
- * Compute alert age in ms using:
- *  1. [NagiosProblem.lastStateChange] if available from Nagios.
- *  2. [ProblemAgeStore] local first-seen timestamp.
- *  3. null if neither is available — callers treat null as "unknown age = allow notification".
+ * Compute alert age in ms using (in priority order):
+ *  1. [firstSeenFn] when supplied — unit-test injection, bypasses both lastStateChange and store.
+ *  2. [NagiosProblem.lastStateChange] if available from Nagios.
+ *  3. [ProblemAgeStore] local first-seen timestamp (requires [context]).
+ *  4. null — callers treat null as "unknown age = allow notification".
  */
 fun resolveAlertAgeMs(
     instanceId: String,
     problem: NagiosProblem,
     now: Long,
     context: Context?,
+    firstSeenFn: ((String, NagiosProblem) -> Long?)? = null,
 ): Long? {
+    if (firstSeenFn != null) {
+        firstSeenFn(instanceId, problem)?.let { return now - it }
+        return null   // hook returned null → unknown age
+    }
     problem.lastStateChange?.let { return now - it }
     if (context != null) {
         ProblemAgeStore.getFirstSeen(context, instanceId, problem)?.let { return now - it }
