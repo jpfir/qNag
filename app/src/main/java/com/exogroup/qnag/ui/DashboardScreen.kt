@@ -58,6 +58,8 @@ fun DashboardScreen(
     initialDashboardScope: String = "ALL",
     // Called whenever the user changes the scope so the caller can persist the new value.
     onScopeChanged: (String) -> Unit = {},
+    // Navigate to the full-screen problem detail view (Goal 3).
+    onOpenProblemDetail: (NagiosProblem, NagiosInstance?) -> Unit = { _, _ -> },
     nagiosViewModel: NagiosViewModel = viewModel(),
 ) {
     val enabledInstances = remember(allInstances) { allInstances.filter { it.enabled } }
@@ -269,6 +271,13 @@ fun DashboardScreen(
             isLocallyAcknowledged = isLocallyAcked,
             isRecheckPending = isRecheckPendingFn,
             problemKey = problemKey,
+            onOpenProblemDetail = { problem ->
+                val instId = problem.instanceId.ifEmpty {
+                    (selectedInstance as? InstanceSelection.Single)?.instance?.id ?: instance.id
+                }
+                val inst = enabledInstances.find { it.id == instId }
+                onOpenProblemDetail(problem, inst)
+            },
             onToggleSelect = { key -> selectedIds = if (selectedIds.contains(key)) selectedIds - key else selectedIds + key },
             onLongPress = { key -> selectedIds = selectedIds + key },
             onAck = { key ->
@@ -304,6 +313,7 @@ private fun DashboardContent(
     isLocallyAcknowledged: (NagiosProblem) -> Boolean,
     isRecheckPending: (NagiosProblem) -> Boolean = { false },
     problemKey: (NagiosProblem) -> String,
+    onOpenProblemDetail: (NagiosProblem) -> Unit = {},
     onToggleSelect: (String) -> Unit,
     onLongPress: (String) -> Unit,
     onAck: (String) -> Unit,
@@ -339,7 +349,8 @@ private fun DashboardContent(
                     ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         isRecheckPending = isRecheckPending,
-                        problemKey = problemKey, onToggleSelect = onToggleSelect, onLongPress = onLongPress,
+                        problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
+                        onToggleSelect = onToggleSelect, onLongPress = onLongPress,
                         onAck = onAck, onRecheck = onRecheck,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
                         isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
@@ -355,7 +366,8 @@ private fun DashboardContent(
                     ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         isRecheckPending = isRecheckPending,
-                        problemKey = problemKey, onToggleSelect = onToggleSelect, onLongPress = onLongPress,
+                        problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
+                        onToggleSelect = onToggleSelect, onLongPress = onLongPress,
                         onAck = onAck, onRecheck = onRecheck,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
                         isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
@@ -412,6 +424,7 @@ private fun ProblemList(
     isLocallyAcknowledged: (NagiosProblem) -> Boolean,
     isRecheckPending: (NagiosProblem) -> Boolean = { false },
     problemKey: (NagiosProblem) -> String,
+    onOpenProblemDetail: (NagiosProblem) -> Unit = {},
     onToggleSelect: (String) -> Unit,
     onLongPress: (String) -> Unit,
     onAck: (String) -> Unit,
@@ -420,6 +433,9 @@ private fun ProblemList(
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = onRefresh,
@@ -438,6 +454,19 @@ private fun ProblemList(
                     isPendingAck = locallyAcked && !problem.acknowledged,
                     instanceName = if (showInstanceNames) problem.instanceName else "",
                     isRecheckPending = isRecheckPending(problem),
+                    onOpenDetail = { onOpenProblemDetail(problem) },
+                    onCopyOutput = {
+                        clipboardManager.setText(
+                            androidx.compose.ui.text.AnnotatedString(problem.pluginOutput)
+                        )
+                    },
+                    onShare = {
+                        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(android.content.Intent.EXTRA_TEXT, buildAlertSummary(problem))
+                        }
+                        context.startActivity(android.content.Intent.createChooser(intent, "Share alert"))
+                    },
                     onToggleSelect = { onToggleSelect(key) },
                     onLongPress = { onLongPress(key) },
                     onAck = { onAck(key) },

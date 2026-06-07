@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -39,6 +40,11 @@ fun ProblemCard(
     instanceName: String = "",
     // True while a recheck was submitted but Nagios has not yet executed the forced check
     isRecheckPending: Boolean = false,
+    // Overflow-menu actions — null = hidden from menu
+    onOpenDetail: (() -> Unit)? = null,
+    onCopyOutput: (() -> Unit)? = null,
+    onShare: (() -> Unit)? = null,
+    onOpenInNagios: (() -> Unit)? = null,
     onToggleSelect: () -> Unit,
     onLongPress: () -> Unit,
     onAck: () -> Unit,
@@ -126,6 +132,12 @@ fun ProblemCard(
                     isPendingAck = isPendingAck,
                     instanceName = instanceName,
                     isRecheckPending = isRecheckPending,
+                    onAck = onAck,
+                    onRecheck = onRecheck,
+                    onOpenDetail = onOpenDetail,
+                    onCopyOutput = onCopyOutput,
+                    onShare = onShare,
+                    onOpenInNagios = onOpenInNagios,
                 )
             }
         }
@@ -140,6 +152,12 @@ private fun ProblemCardContent(
     isPendingAck: Boolean,
     instanceName: String = "",
     isRecheckPending: Boolean = false,
+    onAck: () -> Unit = {},
+    onRecheck: () -> Unit = {},
+    onOpenDetail: (() -> Unit)? = null,
+    onCopyOutput: (() -> Unit)? = null,
+    onShare: (() -> Unit)? = null,
+    onOpenInNagios: (() -> Unit)? = null,
 ) {
     Column(modifier = Modifier.padding(12.dp)) {
         // ── Name block — instance chip floats to top-right so names use full width ──
@@ -178,6 +196,61 @@ private fun ProblemCardContent(
                 Spacer(Modifier.width(4.dp))
                 InstanceBadge(instanceName)
             }
+            // Three-dot overflow menu
+            var menuExpanded by remember { mutableStateOf(false) }
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "More actions",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    onOpenDetail?.let {
+                        DropdownMenuItem(
+                            text = { Text("Details") },
+                            onClick = { menuExpanded = false; it() },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Acknowledge") },
+                        onClick = { menuExpanded = false; onAck() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Recheck") },
+                        onClick = { menuExpanded = false; onRecheck() },
+                    )
+                    onCopyOutput?.let {
+                        DropdownMenuItem(
+                            text = { Text("Copy output") },
+                            onClick = { menuExpanded = false; it() },
+                        )
+                    }
+                    onOpenInNagios?.let {
+                        DropdownMenuItem(
+                            text = { Text("Open in Nagios") },
+                            onClick = { menuExpanded = false; it() },
+                        )
+                    }
+                    onShare?.let {
+                        DropdownMenuItem(
+                            text = { Text("Share") },
+                            onClick = { menuExpanded = false; it() },
+                        )
+                    }
+                    HorizontalDivider()
+                    // TODO: implement Nagios cmd.cgi downtime scheduling
+                    DropdownMenuItem(
+                        text = { Text("Schedule downtime…", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)) },
+                        onClick = {},
+                        enabled = false,
+                    )
+                }
+            }
         }
 
         // ── Severity / ACK chips — status and ACK only, no instance clutter ──
@@ -197,10 +270,12 @@ private fun ProblemCardContent(
 
         // ── Check timing line ─────────────────────────────────────────────────
         val lastCheckMs = problem.lastCheck
+        // State duration — appended to the timing line when lastStateChange is available
+        val stateForSuffix = problem.lastStateChange?.let {
+            " · Since ${checkDuration(System.currentTimeMillis() - it)}"
+        } ?: ""
         Spacer(Modifier.height(3.dp))
         if (isRecheckPending) {
-            // Pending: show the "waiting" notice plus the previous check time so the user
-            // knows the displayed plugin output is still from the old check (Goal 1).
             Text(
                 "⏳ Recheck pending — waiting for fresh result",
                 style = MaterialTheme.typography.labelSmall,
@@ -208,7 +283,7 @@ private fun ProblemCardContent(
             )
             if (lastCheckMs != null) {
                 Text(
-                    "Last check: ${checkTime(lastCheckMs)} · ${checkAge(System.currentTimeMillis() - lastCheckMs)}",
+                    "Last check: ${checkTime(lastCheckMs)} · ${checkAge(System.currentTimeMillis() - lastCheckMs)}$stateForSuffix",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -221,12 +296,19 @@ private fun ProblemCardContent(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "Checked ${checkAge(ageMs)} · ${checkTime(lastCheckMs)}",
+                    "Checked ${checkAge(ageMs)} · ${checkTime(lastCheckMs)}$stateForSuffix",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (isStale) StaleBadge()
             }
+        } else if (stateForSuffix.isNotEmpty()) {
+            // No lastCheck but we have state duration — show it alone
+            Text(
+                stateForSuffix.removePrefix(" · "),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         // ── Plugin output ─────────────────────────────────────────────────────
@@ -259,6 +341,7 @@ private fun ProblemCardContent(
 private fun CheckMetadataSection(problem: NagiosProblem) {
     val now = System.currentTimeMillis()
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        // ── Check timing ──────────────────────────────────────────────────────
         problem.lastCheck?.let { ts ->
             CheckDetailRow("Last check", "${checkTime(ts)}  (${checkAge(now - ts)})")
         }
@@ -269,7 +352,6 @@ private fun CheckMetadataSection(problem: NagiosProblem) {
         problem.lastStateChange?.let { ts ->
             CheckDetailRow("State since", checkDuration(now - ts))
         }
-        // Last hard state change — Goal 2
         problem.lastHardStateChange?.let { ts ->
             CheckDetailRow("Hard state since", "${checkTime(ts)}  (${checkDuration(now - ts)})")
         }
@@ -280,6 +362,40 @@ private fun CheckMetadataSection(problem: NagiosProblem) {
             CheckDetailRow("Attempt", if (maxAtt != null) "$attempt/$maxAtt  $stateLabel" else "$attempt  $stateLabel")
         }
         problem.checkType?.let { CheckDetailRow("Check type", it) }
+
+        // ── State flags ───────────────────────────────────────────────────────
+        val hasStateFlags = problem.acknowledged || problem.scheduledDowntimeDepth > 0 ||
+                !problem.notificationsEnabled || !problem.checksEnabled || problem.isFlapping
+        if (hasStateFlags) {
+            Spacer(Modifier.height(2.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Spacer(Modifier.height(2.dp))
+            if (problem.acknowledged) CheckDetailRow("Acknowledged", "yes")
+            if (problem.scheduledDowntimeDepth > 0) CheckDetailRow("In downtime", "yes (depth ${problem.scheduledDowntimeDepth})")
+            if (!problem.notificationsEnabled) CheckDetailRow("Notifications", "disabled")
+            if (!problem.checksEnabled) CheckDetailRow("Checks", "disabled")
+            if (problem.isFlapping) CheckDetailRow("Flapping", "yes")
+        }
+
+        // ── Host state (service problems only) ────────────────────────────────
+        if (problem is NagiosProblem.ServiceProblem) {
+            val hostStatusLabel = when (problem.hostStatus) {
+                NagiosStatus.HOST_DOWN        -> "DOWN"
+                NagiosStatus.HOST_UNREACHABLE -> "UNREACHABLE"
+                NagiosStatus.HOST_UP          -> "UP"
+                else                          -> null
+            }
+            val hasHostInfo = hostStatusLabel != null || problem.hostAcknowledged ||
+                    problem.hostScheduledDowntimeDepth > 0
+            if (hasHostInfo) {
+                Spacer(Modifier.height(2.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Spacer(Modifier.height(2.dp))
+                if (hostStatusLabel != null) CheckDetailRow("Host state", hostStatusLabel)
+                if (problem.hostAcknowledged) CheckDetailRow("Host ack", "yes")
+                if (problem.hostScheduledDowntimeDepth > 0) CheckDetailRow("Host downtime", "yes")
+            }
+        }
     }
 }
 
@@ -404,10 +520,10 @@ private fun isCheckStale(ageMs: Long, @Suppress("UNUSED_PARAMETER") nextCheckMs:
     return ageMs > STALE_CHECK_THRESHOLD_MS
 }
 
-private fun checkTime(epochMs: Long): String =
+internal fun checkTime(epochMs: Long): String =
     SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(epochMs))
 
-private fun checkAge(ageMs: Long): String {
+internal fun checkAge(ageMs: Long): String {
     val sec = ageMs / 1000
     return when {
         sec < 60   -> "${sec}s ago"
@@ -416,7 +532,7 @@ private fun checkAge(ageMs: Long): String {
     }
 }
 
-private fun checkDuration(durationMs: Long): String {
+internal fun checkDuration(durationMs: Long): String {
     val sec = durationMs / 1000
     return when {
         sec < 60   -> "${sec}s"

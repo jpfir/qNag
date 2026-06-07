@@ -23,8 +23,10 @@ import com.exogroup.qnag.data.SecureInstanceStore
 import com.exogroup.qnag.notifications.NotificationHelper
 import com.exogroup.qnag.reliability.ExactAlarmWatchdogScheduler
 import com.exogroup.qnag.service.NagiosMonitoringService
+import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.ui.AddInstanceScreen
 import com.exogroup.qnag.ui.DashboardScreen
+import com.exogroup.qnag.ui.ProblemDetailScreen
 import com.exogroup.qnag.ui.SettingsScreen
 import com.exogroup.qnag.worker.BackgroundPollingScheduler
 
@@ -32,6 +34,7 @@ private sealed class AppScreen {
     object AddInstance : AppScreen()
     data class Dashboard(val instance: NagiosInstance) : AppScreen()
     data class Settings(val fromInstance: NagiosInstance) : AppScreen()
+    data class ProblemDetail(val problem: NagiosProblem, val instance: NagiosInstance?) : AppScreen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -127,6 +130,9 @@ class MainActivity : ComponentActivity() {
                                     store.saveAppSettings(updated)
                                     appSettings = updated
                                 },
+                                onOpenProblemDetail = { problem, instance ->
+                                    screen = AppScreen.ProblemDetail(problem, instance)
+                                },
                             )
                         }
 
@@ -163,6 +169,20 @@ class MainActivity : ComponentActivity() {
                                         enabled.any { it.id == s.fromInstance.id } -> AppScreen.Dashboard(s.fromInstance)
                                         else -> AppScreen.Dashboard(enabled.first())
                                     }
+                                },
+                            )
+                        }
+
+                        is AppScreen.ProblemDetail -> {
+                            ProblemDetailScreen(
+                                problem = s.problem,
+                                instance = s.instance,
+                                commandSettings = appSettings.commandSettings,
+                                onBack = {
+                                    val enabled = instances.filter { it.enabled }
+                                    screen = if (enabled.isNotEmpty())
+                                        AppScreen.Dashboard(enabled.first())
+                                    else AppScreen.AddInstance
                                 },
                             )
                         }
