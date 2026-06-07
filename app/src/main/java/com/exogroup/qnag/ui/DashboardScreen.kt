@@ -466,7 +466,9 @@ private fun DashboardContent(
                     }
                     else -> ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
-                        problemKey = problemKey, onToggleSelect = onToggleSelect, onLongPress = onLongPress,
+                        isRecheckPending = isRecheckPending, problemKey = problemKey,
+                        onOpenProblemDetail = onOpenProblemDetail,
+                        onToggleSelect = onToggleSelect, onLongPress = onLongPress,
                         onAck = onAck, onRecheck = onRecheck,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = state.problems.size, lastUpdated = state.lastUpdated, stale = false) },
                         isRefreshing = false, onRefresh = onRetry)
