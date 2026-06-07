@@ -17,9 +17,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.exogroup.qnag.data.AppSettings
+import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.data.NagiosInstance
 import com.exogroup.qnag.data.SecureInstanceStore
 import com.exogroup.qnag.notifications.NotificationHelper
+import com.exogroup.qnag.reliability.ExactAlarmWatchdogScheduler
 import com.exogroup.qnag.service.NagiosMonitoringService
 import com.exogroup.qnag.ui.AddInstanceScreen
 import com.exogroup.qnag.ui.DashboardScreen
@@ -48,6 +50,8 @@ class MainActivity : ComponentActivity() {
 
         NotificationHelper.createChannels(this)
         notifPermissionGranted.value = NotificationHelper.hasPermission(this)
+        // Auto-restart on cold start (also covers package replace / force-stop recovery)
+        autoRestartIfEligible()
 
         val store = SecureInstanceStore(this)
 
@@ -168,6 +172,30 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        notifPermissionGranted.value = NotificationHelper.hasPermission(this)
+        // Auto-restart Reliability Mode when the user opens/resumes the app (Goal 1).
+        // Only reads from the store when Reliability Mode is ON and service has died,
+        // to avoid expensive reads on every resume.
+        autoRestartIfEligible()
+    }
+
+    /**
+     * Restart Reliability Mode if all conditions are met and the service has stopped.
+     * Lightweight guard: only reads EncryptedSharedPreferences when keepMonitoringActive=true
+     * and health prefs show the service is not running.
+     */
+    private fun autoRestartIfEligible() {
+        val snapshot = MonitoringHealth.getSnapshot(this)
+        if (snapshot.isServiceRunning) return  // fast-path: service alive, nothing to do
+        val store = SecureInstanceStore(this)
+        val settings = store.getAppSettings()
+        if (!settings.commandSettings.keepMonitoringActive) return  // Reliability Mode OFF
+        val instances = store.getInstances()
+        applyPollingMode(settings, instances)
+    }
+
     /**
      * Single entry-point for all foreground-service / WorkManager scheduling decisions.
      *
@@ -183,11 +211,13 @@ class MainActivity : ComponentActivity() {
         val debug = settings.commandSettings.debugCommandSubmission
 
         if (settings.commandSettings.keepMonitoringActive && eligible) {
-            if (debug) android.util.Log.d("qNag", "[main] applyPollingMode: foreground active+eligible, cancelling WorkManager")
+            if (debug) android.util.Log.d("qNag", "[main] applyPollingMode: foreground active+eligible")
             BackgroundPollingScheduler.cancel(this)
-            NagiosMonitoringService.start(this)  // start() is idempotent — service reloads settings
+            NagiosMonitoringService.start(this)  // idempotent — service reloads settings
+            ExactAlarmWatchdogScheduler.schedule(this, settings)
         } else {
             NagiosMonitoringService.stop(this)
+            ExactAlarmWatchdogScheduler.cancel(this)
             if (!settings.commandSettings.keepMonitoringActive) {
                 if (debug) android.util.Log.d("qNag", "[main] applyPollingMode: foreground off, scheduling WorkManager")
                 BackgroundPollingScheduler.scheduleOrCancel(this, settings, instances)

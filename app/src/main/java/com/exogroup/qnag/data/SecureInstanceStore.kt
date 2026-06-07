@@ -114,6 +114,8 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 ackServicesOnHostAck = o.get("ackServicesOnHostAck")?.asBoolean ?: true,
                 monitoringStaleThresholdMinutes = o.get("monitoringStaleThresholdMinutes")?.asInt ?: 5,
                 staleMonitoringAlertEnabled = o.get("staleMonitoringAlertEnabled")?.asBoolean ?: true,
+                exactAlarmWatchdogEnabled = o.get("exactAlarmWatchdogEnabled")?.asBoolean ?: true,
+                exactAlarmWatchdogIntervalMinutes = o.get("exactAlarmWatchdogIntervalMinutes")?.asInt ?: 2,
                 debugCommandSubmission = o.get("debugCommandSubmission")?.asBoolean ?: false,
             )
         } catch (_: Exception) { CommandSettings() }

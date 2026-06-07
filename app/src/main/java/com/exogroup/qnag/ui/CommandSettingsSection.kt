@@ -19,6 +19,13 @@ private val FOREGROUND_INTERVALS: List<Pair<Int, String>> = listOf(
     900 to "15 minutes",
 )
 
+private val WATCHDOG_INTERVALS: List<Pair<Int, String>> = listOf(
+    1  to "1 minute",
+    2  to "2 minutes",
+    5  to "5 minutes",
+    15 to "15 minutes",
+)
+
 /**
  * ACK defaults, polling behaviour flags, and miscellaneous command settings.
  * All changes are emitted immediately via [onUpdate].
@@ -110,6 +117,26 @@ fun CommandSettingsSection(
                     currentSeconds = settings.foregroundPollingIntervalSeconds,
                     onSelect = { onUpdate(settings.copy(foregroundPollingIntervalSeconds = it)) },
                 )
+                Spacer(Modifier.height(4.dp))
+                CmdSubheader("Exact Alarm Watchdog")
+                CmdRow("Enable watchdog recovery alarm", settings.exactAlarmWatchdogEnabled) {
+                    onUpdate(settings.copy(exactAlarmWatchdogEnabled = it))
+                }
+                AnimatedVisibility(visible = settings.exactAlarmWatchdogEnabled) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            "Exact Alarm Watchdog fires periodically to check whether Reliability Mode " +
+                            "is still healthy. If the service has stopped or gone stale, it attempts recovery. " +
+                            "Android 12+ requires exact alarm permission (Settings → Special app access).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        WatchdogIntervalPicker(
+                            currentMinutes = settings.exactAlarmWatchdogIntervalMinutes,
+                            onSelect = { onUpdate(settings.copy(exactAlarmWatchdogIntervalMinutes = it)) },
+                        )
+                    }
+                }
             }
         }
 
@@ -234,6 +261,39 @@ private fun ForegroundIntervalPicker(
                 DropdownMenuItem(
                     text = { Text(name) },
                     onClick = { onSelect(seconds); expanded = false },
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WatchdogIntervalPicker(
+    currentMinutes: Int,
+    onSelect: (Int) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val label = WATCHDOG_INTERVALS.find { (m, _) -> m == currentMinutes }?.second
+        ?: "$currentMinutes minutes"
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        OutlinedTextField(
+            value = label,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Check every") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.fillMaxWidth().menuAnchor(),
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            WATCHDOG_INTERVALS.forEach { (minutes, name) ->
+                DropdownMenuItem(
+                    text = { Text(name) },
+                    onClick = { onSelect(minutes); expanded = false },
                 )
             }
         }

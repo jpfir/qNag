@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.exogroup.qnag.data.AppSettings
@@ -79,5 +80,21 @@ object BackgroundPollingScheduler {
             schedule(context, settings.notificationSettings.refreshIntervalMinutes)
         }
         // If not eligible, leave WorkManager as-is (don't cancel existing work)
+    }
+
+    /**
+     * Enqueue a one-time immediate polling check.
+     * Used by the watchdog receiver and the "Run check now" UI action.
+     * Has no effect if the foreground service is already running and healthy.
+     */
+    fun scheduleOnce(context: Context) {
+        val request = OneTimeWorkRequestBuilder<NagiosPollingWorker>()
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
+            .build()
+        WorkManager.getInstance(context).enqueue(request)
     }
 }

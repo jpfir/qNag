@@ -17,6 +17,12 @@
 
     <!-- Foreground service (optional "Keep monitoring active" feature, user-controlled) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!--
+        Required for the Exact Alarm Watchdog recovery layer.
+        On Android 12+ the user must grant this in Settings → Special app access → Alarms & reminders.
+        If denied, qNag falls back to WorkManager (15-min minimum) and shows a health warning.
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- Boot/package-update receiver: schedules WorkManager fallback after reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!--
@@ -68,6 +74,19 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+            Exact Alarm Watchdog receiver — fires periodically while Reliability Mode is ON.
+            Checks whether the foreground service is alive and healthy; attempts recovery if not.
+            Not exported: only fired via PendingIntent created by this app.
+        -->
+        <receiver
+            android:name=".reliability.ExactAlarmWatchdogReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.exogroup.qnag.action.WATCHDOG_ALARM" />
             </intent-filter>
         </receiver>
 

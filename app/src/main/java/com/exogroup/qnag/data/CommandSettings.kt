@@ -36,6 +36,13 @@ data class CommandSettings(
     val monitoringStaleThresholdMinutes: Int = 5,
     val staleMonitoringAlertEnabled: Boolean = true,
 
+    // ── Exact Alarm Watchdog ──────────────────────────────────────────────────
+    // Fires a periodic exact alarm to check whether the foreground service is healthy.
+    // If the service is dead or stale, the receiver attempts recovery and reschedules fallback.
+    // Android 12+ may require the user to grant exact alarm permission.
+    val exactAlarmWatchdogEnabled: Boolean = true,
+    val exactAlarmWatchdogIntervalMinutes: Int = 2,
+
     // ── Diagnostics ───────────────────────────────────────────────────────────
     // When true, logs safe command submission info (field names, HTTP status, sanitized
     // response snippet) to help diagnose recheck/ACK failures.

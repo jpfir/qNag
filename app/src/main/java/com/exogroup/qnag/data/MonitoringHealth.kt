@@ -7,16 +7,14 @@ import androidx.core.content.edit
  * Plain-SharedPreferences health store.
  *
  * Records when qNag polls, when it succeeds, when the foreground service starts/stops,
- * and when WorkManager runs.  Data is non-sensitive (timestamps + reason strings only).
- *
- * Used by [MonitoringHealthSection] to show whether qNag is actually polling, and
- * by the service/worker to detect stale monitoring state.
+ * when WorkManager runs, and when the Exact Alarm Watchdog fires.
+ * Data is non-sensitive (timestamps + reason strings only).
  */
 object MonitoringHealth {
 
     private const val PREFS = "qnag_health"
 
-    // ── Writers — called from service, worker, and boot receiver ─────────────
+    // ── Writers — called from service, worker, receiver, and boot receiver ────
 
     fun recordPollStart(context: Context) =
         prefs(context).edit { putLong("last_poll_start", now()) }
@@ -49,21 +47,42 @@ object MonitoringHealth {
     fun recordBootOrUpdate(context: Context) =
         prefs(context).edit { putLong("last_boot_or_update", now()) }
 
+    // ── Watchdog writers ──────────────────────────────────────────────────────
+
+    fun recordExactAlarmFired(context: Context, action: String) = prefs(context).edit {
+        putLong("last_exact_alarm_fired", now())
+        putString("last_exact_alarm_action", action)
+    }
+
+    fun recordExactAlarmScheduled(context: Context, nextAlarmAt: Long) = prefs(context).edit {
+        putLong("next_exact_alarm", nextAlarmAt)
+        putBoolean("exact_alarm_scheduled", true)
+    }
+
+    fun recordExactAlarmCanceled(context: Context) = prefs(context).edit {
+        putBoolean("exact_alarm_scheduled", false)
+        remove("next_exact_alarm")
+    }
+
     // ── Reader ────────────────────────────────────────────────────────────────
 
     fun getSnapshot(context: Context): HealthSnapshot {
         val p = prefs(context)
         return HealthSnapshot(
-            lastPollStartedAt   = p.getLong("last_poll_start",     0).takeIf { it > 0 },
-            lastPollFinishedAt  = p.getLong("last_poll_finished",   0).takeIf { it > 0 },
-            lastSuccessfulPollAt= p.getLong("last_poll_success",    0).takeIf { it > 0 },
-            lastServiceStartedAt= p.getLong("last_service_start",   0).takeIf { it > 0 },
-            lastServiceStoppedAt= p.getLong("last_service_stop",    0).takeIf { it > 0 },
+            lastPollStartedAt    = p.getLong("last_poll_start",        0).takeIf { it > 0 },
+            lastPollFinishedAt   = p.getLong("last_poll_finished",      0).takeIf { it > 0 },
+            lastSuccessfulPollAt = p.getLong("last_poll_success",       0).takeIf { it > 0 },
+            lastServiceStartedAt = p.getLong("last_service_start",      0).takeIf { it > 0 },
+            lastServiceStoppedAt = p.getLong("last_service_stop",       0).takeIf { it > 0 },
             lastServiceStopReason = p.getString("last_service_stop_reason", null),
-            isServiceRunning    = p.getBoolean("service_running",   false),
-            lastWorkerRunAt     = p.getLong("last_worker_run",      0).takeIf { it > 0 },
-            lastWorkerSuccessAt = p.getLong("last_worker_success",  0).takeIf { it > 0 },
-            lastBootOrUpdateAt  = p.getLong("last_boot_or_update",  0).takeIf { it > 0 },
+            isServiceRunning     = p.getBoolean("service_running",      false),
+            lastWorkerRunAt      = p.getLong("last_worker_run",         0).takeIf { it > 0 },
+            lastWorkerSuccessAt  = p.getLong("last_worker_success",     0).takeIf { it > 0 },
+            lastBootOrUpdateAt   = p.getLong("last_boot_or_update",     0).takeIf { it > 0 },
+            exactAlarmScheduled  = p.getBoolean("exact_alarm_scheduled",false),
+            nextExactAlarmAt     = p.getLong("next_exact_alarm",        0).takeIf { it > 0 },
+            lastExactAlarmFiredAt = p.getLong("last_exact_alarm_fired", 0).takeIf { it > 0 },
+            lastExactAlarmAction = p.getString("last_exact_alarm_action", null),
         )
     }
 
@@ -80,6 +99,11 @@ object MonitoringHealth {
         val lastWorkerRunAt: Long?,
         val lastWorkerSuccessAt: Long?,
         val lastBootOrUpdateAt: Long?,
+        // Watchdog
+        val exactAlarmScheduled: Boolean,
+        val nextExactAlarmAt: Long?,
+        val lastExactAlarmFiredAt: Long?,
+        val lastExactAlarmAction: String?,
     )
 
     // ── Helpers ───────────────────────────────────────────────────────────────
