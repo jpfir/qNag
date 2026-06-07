@@ -67,6 +67,9 @@ class NagiosPollingWorker(
         val failedInstanceNames = mutableListOf<String>()         // names of instances that failed
         val prevTier2WaitingFps = loadTier2WaitingFps()
         val newTier2WaitingFps  = mutableSetOf<String>()
+        // Collect age keys across ALL instances before pruning so one instance's
+        // result never removes Tier 2+ first-seen entries belonging to another instance.
+        val allActiveAgeKeys    = mutableSetOf<String>()
 
         for (instance in targets) {
             try {
@@ -88,16 +91,14 @@ class NagiosPollingWorker(
                 val now = System.currentTimeMillis()
                 // Update age stores before evaluating decisions
                 for (problem in filtered) {
-                    if (notifSettings.tier2PlusEnabled)
+                    if (notifSettings.tier2PlusEnabled) {
                         ProblemAgeStore.recordIfAbsent(applicationContext, instance.id, problem)
+                        allActiveAgeKeys += ProblemAgeStore.key(instance.id, problem)
+                    }
                     if (problem.acknowledged)
                         AckAgeStore.recordIfAbsent(applicationContext, instance.id, problem)
                     else
                         AckAgeStore.remove(applicationContext, instance.id, problem)
-                }
-                if (notifSettings.tier2PlusEnabled) {
-                    val activeAgeKeys = filtered.map { ProblemAgeStore.key(instance.id, it) }.toSet()
-                    ProblemAgeStore.pruneStale(applicationContext, activeAgeKeys)
                 }
 
                 for (problem in filtered) {
@@ -169,6 +170,10 @@ class NagiosPollingWorker(
             }
         }
 
+        // Prune stale age entries once per full poll cycle using keys from ALL instances
+        if (notifSettings.tier2PlusEnabled) {
+            ProblemAgeStore.pruneStale(applicationContext, allActiveAgeKeys)
+        }
         saveFingerprints(fingerprints)
         saveFailedInstances(failedInstanceIds)
         saveTier2WaitingFps(newTier2WaitingFps)

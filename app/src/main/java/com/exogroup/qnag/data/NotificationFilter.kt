@@ -3,8 +3,8 @@ package com.exogroup.qnag.data
 
 import android.content.Context
 
-// Separator that cannot appear in UUIDs or Nagios host/service names
-private const val SEP = ""
+// U+001F unit separator — cannot appear in UUIDs or Nagios host/service names
+private const val SEP = ""
 
 // ── Notification decision model ───────────────────────────────────────────────
 

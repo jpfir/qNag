@@ -370,7 +370,7 @@ private fun AboutPage() {
         )
         Text(
             "Reliability Mode uses a foreground service with a persistent status notification " +
-            "for aNag-style phone-side monitoring.  qNag produces alert sounds via its own " +
+            "for phone-side Nagios monitoring.  qNag produces alert sounds via its own " +
             "in-app audio engine, independent of notification-channel settings.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

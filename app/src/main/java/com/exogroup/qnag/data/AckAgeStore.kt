@@ -16,7 +16,7 @@ import android.content.Context
 object AckAgeStore {
 
     private const val PREFS_NAME = "qnag_ack_ages"
-    private const val SEP        = ""
+    private const val SEP        = ""   // U+001F unit separator
 
     fun key(instanceId: String, problem: NagiosProblem): String =
         "$instanceId$SEP${problem.uniqueId}"

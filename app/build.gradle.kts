@@ -25,11 +25,12 @@ android {
         // Release signing uses environment variables injected by CI.
         // Debug builds work without these — this block is ignored when env vars are absent.
         create("release") {
-            val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+            val keystorePath     = System.getenv("ANDROID_KEYSTORE_PATH")
             val keystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
-            val keyAlias = System.getenv("ANDROID_KEY_ALIAS")
-            val keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
-            if (keystorePath != null && keystorePassword != null && keyAlias != null && keyPassword != null) {
+            val keyAlias         = System.getenv("ANDROID_KEY_ALIAS")
+            val keyPassword      = System.getenv("ANDROID_KEY_PASSWORD")
+            if (!keystorePath.isNullOrBlank() && !keystorePassword.isNullOrBlank() &&
+                !keyAlias.isNullOrBlank()     && !keyPassword.isNullOrBlank()) {
                 storeFile = file(keystorePath)
                 storePassword = keystorePassword
                 this.keyAlias = keyAlias
@@ -44,7 +45,7 @@ android {
                 enable = false
             }
             val releaseConfig = signingConfigs.getByName("release")
-            if (System.getenv("ANDROID_KEYSTORE_PATH") != null) {
+            if (!System.getenv("ANDROID_KEYSTORE_PATH").isNullOrBlank()) {
                 signingConfig = releaseConfig
             }
         }

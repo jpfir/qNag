@@ -238,6 +238,9 @@ class NagiosMonitoringService : Service() {
             // Tier 2+ transition tracking: fingerprints that were waiting last poll
             val prevTier2WaitingFps = loadTier2WaitingFps()
             val newTier2WaitingFps  = mutableSetOf<String>()
+            // Collect age keys across ALL instances before pruning so one instance's
+            // poll never removes Tier 2+ first-seen entries belonging to another instance.
+            val allActiveAgeKeys    = mutableSetOf<String>()
 
             for (instance in targets) {
                 try {
@@ -253,17 +256,14 @@ class NagiosMonitoringService : Service() {
                     val now = System.currentTimeMillis()
                     // Update age stores for all visible problems before evaluating decisions
                     for (problem in filtered) {
-                        if (notifSettings.tier2PlusEnabled)
+                        if (notifSettings.tier2PlusEnabled) {
                             ProblemAgeStore.recordIfAbsent(applicationContext, instance.id, problem)
+                            allActiveAgeKeys += ProblemAgeStore.key(instance.id, problem)
+                        }
                         if (problem.acknowledged)
                             AckAgeStore.recordIfAbsent(applicationContext, instance.id, problem)
                         else
                             AckAgeStore.remove(applicationContext, instance.id, problem)
-                    }
-                    // Prune stale age entries once per poll
-                    if (notifSettings.tier2PlusEnabled) {
-                        val activeAgeKeys = filtered.map { ProblemAgeStore.key(instance.id, it) }.toSet()
-                        ProblemAgeStore.pruneStale(applicationContext, activeAgeKeys)
                     }
 
                     for (problem in filtered) {
@@ -407,6 +407,10 @@ class NagiosMonitoringService : Service() {
                 }
             }
 
+            // Prune stale age entries once per full poll cycle using keys from ALL instances
+            if (notifSettings.tier2PlusEnabled) {
+                ProblemAgeStore.pruneStale(applicationContext, allActiveAgeKeys)
+            }
             saveFingerprints(fingerprints)
             saveFailedInstances(failedIds)
             saveTier2WaitingFps(newTier2WaitingFps)
