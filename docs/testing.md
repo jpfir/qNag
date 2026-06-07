@@ -130,3 +130,29 @@
 - Validate that the foreground service survives overnight with the screen off.
 - Manual force-stop is a special Android state: the OS may prevent alarms/jobs/receivers from running until the user opens the app again.
 - Check Event Log after each test session for unexpected errors or gaps in polling.
+
+---
+
+## 8. Tier 2+ Notification Delay
+
+- [ ] Tier 2+ disabled (default) — alert sounds immediately when detected
+- [ ] Enable Tier 2+ with 5m delay — alert visible in dashboard immediately, no sound for 5m
+- [ ] After 5m — alert becomes notification-eligible; sound plays once
+- [ ] T2+ badge visible on card while waiting; badge disappears after threshold
+- [ ] "Tier 2+ active · notify after 5m" banner visible on dashboard
+- [ ] Per-state delays enabled — set different delays per state and verify each
+- [ ] Critical vs Warning — verify critical sounds after its configured delay, warning after its own
+- [ ] Downtime with Tier 2+ — problem in downtime does not sound even after Tier 2+ threshold
+- [ ] Soft state with notifyOnlyHardState=true — does not sound even after Tier 2+ threshold
+- [ ] ACKed alert with Tier 2+ — remains quiet even when Tier 2+ delay is satisfied
+- [ ] Event Log — "Tier 2+ delay" entry appears for new waiting alerts; "Tier 2+ eligible" when threshold crossed; no spam per poll
+- [ ] Disable Tier 2+ while alerts are present — sound fires immediately on next poll
+- [ ] Restart app with Tier 2+ active — waiting state persists (first-seen stored in ProblemAgeStore)
+
+## 9. ACKed Alert Re-Notification
+
+- [ ] notifyAckedAfterEnabled=false (default) — ACKed alerts remain quiet indefinitely
+- [ ] Enable re-notify after 60m — ACKed alert remains quiet for 60m, then sounds once
+- [ ] Re-notify fires only once — no repeated sound after re-notify threshold crossed
+- [ ] ACK removed and re-applied — timer resets (new ACK timestamp)
+- [ ] Event Log — "ACKed re-notify eligible" entry when threshold is crossed

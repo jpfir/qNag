@@ -4,16 +4,20 @@ import android.content.Context
 import androidx.core.content.edit
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.exogroup.qnag.data.AckAgeStore
 import com.exogroup.qnag.data.AckSuppressCache
 import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.data.NagiosApi
+import com.exogroup.qnag.data.NagiosProblem
+import com.exogroup.qnag.data.NotificationDecisionReason
 import com.exogroup.qnag.data.NotificationMode
+import com.exogroup.qnag.data.ProblemAgeStore
 import com.exogroup.qnag.data.SecureInstanceStore
 import com.exogroup.qnag.data.applyFilters
+import com.exogroup.qnag.data.evaluateNotificationDecision
 import com.exogroup.qnag.data.fetchFailureNotificationId
 import com.exogroup.qnag.data.instanceFingerprintPrefix
 import com.exogroup.qnag.data.problemFingerprint
-import com.exogroup.qnag.data.shouldNotify
 import com.exogroup.qnag.notifications.NotificationHelper
 import com.exogroup.qnag.notifications.ProblemToNotify
 import com.google.gson.Gson
@@ -61,6 +65,8 @@ class NagiosPollingWorker(
         val toNotify = mutableListOf<ProblemToNotify>()          // new/changed — drives sound in all modes
         val allCurrentProblems = mutableListOf<ProblemToNotify>() // all current — drives summary text
         val failedInstanceNames = mutableListOf<String>()         // names of instances that failed
+        val prevTier2WaitingFps = loadTier2WaitingFps()
+        val newTier2WaitingFps  = mutableSetOf<String>()
 
         for (instance in targets) {
             try {
@@ -79,14 +85,36 @@ class NagiosPollingWorker(
 
                 fingerprints = (fingerprints - knownForInstance) + currentFingerprints
 
+                val now = System.currentTimeMillis()
+                // Update age stores before evaluating decisions
                 for (problem in filtered) {
-                    if (!shouldNotify(problem, notifSettings)) continue
-                    if (notifSettings.notifyOnlyUnacknowledged &&
+                    if (notifSettings.tier2PlusEnabled)
+                        ProblemAgeStore.recordIfAbsent(applicationContext, instance.id, problem)
+                    if (problem.acknowledged)
+                        AckAgeStore.recordIfAbsent(applicationContext, instance.id, problem)
+                    else
+                        AckAgeStore.remove(applicationContext, instance.id, problem)
+                }
+                if (notifSettings.tier2PlusEnabled) {
+                    val activeAgeKeys = filtered.map { ProblemAgeStore.key(instance.id, it) }.toSet()
+                    ProblemAgeStore.pruneStale(applicationContext, activeAgeKeys)
+                }
+
+                for (problem in filtered) {
+                    val decision = evaluateNotificationDecision(
+                        instance.id, problem, notifSettings, now, applicationContext)
+                    val fp = problemFingerprint(instance.id, problem)
+
+                    if (decision.reason == NotificationDecisionReason.TIER2_WAITING) {
+                        newTier2WaitingFps.add(fp)
+                    }
+
+                    if (!decision.shouldNotify) continue
+                    if (decision.reason != NotificationDecisionReason.ACKED_RENOTIFY_ELIGIBLE &&
                         AckSuppressCache.isSuppressed(applicationContext, instance.id, problem)) continue
-                    // All current problems for summary text
+                    // All current notification-eligible problems for summary text and sound
                     allCurrentProblems += ProblemToNotify(instance.id, instance.name, problem)
                     // New/changed problems for sound and PER_PROBLEM mode
-                    val fp = problemFingerprint(instance.id, problem)
                     val isNew = fp !in knownForInstance
                     if (!cmdSettings.notifyOnlyNewProblems || isNew) {
                         toNotify += ProblemToNotify(instance.id, instance.name, problem)
@@ -143,6 +171,7 @@ class NagiosPollingWorker(
 
         saveFingerprints(fingerprints)
         saveFailedInstances(failedInstanceIds)
+        saveTier2WaitingFps(newTier2WaitingFps)
 
         return Result.success()
     }
@@ -177,6 +206,16 @@ class NagiosPollingWorker(
         prefs().edit { putString(KEY_FAILED, gson.toJson(failed)) }
     }
 
+    private fun loadTier2WaitingFps(): Set<String> {
+        val json = prefs().getString(KEY_TIER2_WAITING, null) ?: return emptySet()
+        return try { gson.fromJson<Set<String>>(json, object : TypeToken<Set<String>>() {}.type) ?: emptySet() }
+        catch (_: Exception) { emptySet() }
+    }
+
+    private fun saveTier2WaitingFps(fps: Set<String>) {
+        prefs().edit { putString(KEY_TIER2_WAITING, gson.toJson(fps)) }
+    }
+
     private fun prefs() =
         applicationContext.getSharedPreferences("qnag_polling_state", Context.MODE_PRIVATE)
 
@@ -194,7 +233,8 @@ class NagiosPollingWorker(
     }
 
     private companion object {
-        const val KEY_FINGERPRINTS = "fingerprints"
-        const val KEY_FAILED = "failed_instances"
+        const val KEY_FINGERPRINTS  = "fingerprints"
+        const val KEY_FAILED        = "failed_instances"
+        const val KEY_TIER2_WAITING = "tier2_waiting_fps"
     }
 }

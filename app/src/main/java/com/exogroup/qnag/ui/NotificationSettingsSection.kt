@@ -379,6 +379,109 @@ fun NotificationSettingsSection(
                     }
                 }
 
+                // ── Tier 2+ notification delay ────────────────────────────────────────────
+                Spacer(Modifier.height(8.dp))
+                NotifSubheader("Tier 2+ notification delay")
+                Text(
+                    "Tier 2+ keeps alerts visible in qNag immediately, but delays Android alerting " +
+                    "and sound until the problem has lasted long enough. Useful to avoid spurious " +
+                    "alerts from short transient problems.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                NotifRow("Enable Tier 2+ delay mode", settings.tier2PlusEnabled) {
+                    onUpdate(settings.copy(tier2PlusEnabled = it))
+                }
+                AnimatedVisibility(visible = settings.tier2PlusEnabled) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        var tier2DelayText by remember(settings.tier2PlusDelayMinutes) {
+                            mutableStateOf(settings.tier2PlusDelayMinutes.toString())
+                        }
+                        OutlinedTextField(
+                            value = tier2DelayText,
+                            onValueChange = { raw ->
+                                tier2DelayText = raw
+                                raw.toIntOrNull()?.takeIf { it >= 0 }?.let {
+                                    onUpdate(settings.copy(tier2PlusDelayMinutes = it))
+                                }
+                            },
+                            label = { Text("Delay all alerts (minutes)") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            supportingText = { Text("0 = no delay (same as disabled)") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        NotifRow("Use different delay per state", settings.tier2PlusUsePerStateDelays) {
+                            onUpdate(settings.copy(tier2PlusUsePerStateDelays = it))
+                        }
+                        AnimatedVisibility(visible = settings.tier2PlusUsePerStateDelays) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                listOf(
+                                    "Host DOWN (min)" to settings.tier2HostDownDelayMinutes to
+                                        { v: Int -> settings.copy(tier2HostDownDelayMinutes = v) },
+                                    "Host UNREACHABLE (min)" to settings.tier2HostUnreachableDelayMinutes to
+                                        { v: Int -> settings.copy(tier2HostUnreachableDelayMinutes = v) },
+                                    "Service CRITICAL (min)" to settings.tier2ServiceCriticalDelayMinutes to
+                                        { v: Int -> settings.copy(tier2ServiceCriticalDelayMinutes = v) },
+                                    "Service WARNING (min)" to settings.tier2ServiceWarningDelayMinutes to
+                                        { v: Int -> settings.copy(tier2ServiceWarningDelayMinutes = v) },
+                                    "Service UNKNOWN (min)" to settings.tier2ServiceUnknownDelayMinutes to
+                                        { v: Int -> settings.copy(tier2ServiceUnknownDelayMinutes = v) },
+                                ).forEach { (labelVal, copyFn) ->
+                                    val (label, current) = labelVal
+                                    var text by remember(current) { mutableStateOf(current.toString()) }
+                                    OutlinedTextField(
+                                        value = text,
+                                        onValueChange = { raw ->
+                                            text = raw
+                                            raw.toIntOrNull()?.takeIf { it >= 0 }
+                                                ?.let { onUpdate(copyFn(it)) }
+                                        },
+                                        label = { Text(label) },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── ACKed alert re-notification ───────────────────────────────────────────
+                Spacer(Modifier.height(8.dp))
+                NotifSubheader("ACKed alert re-notification")
+                Text(
+                    "ACKed alerts are normally quiet. Enable to notify again if an ACKed alert " +
+                    "remains active for too long — indicating the ACK may be stale.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                NotifRow("Notify if ACKed for too long", settings.notifyAckedAfterEnabled) {
+                    onUpdate(settings.copy(notifyAckedAfterEnabled = it))
+                }
+                AnimatedVisibility(visible = settings.notifyAckedAfterEnabled) {
+                    var ackedText by remember(settings.notifyAckedAfterMinutes) {
+                        mutableStateOf(settings.notifyAckedAfterMinutes.toString())
+                    }
+                    OutlinedTextField(
+                        value = ackedText,
+                        onValueChange = { raw ->
+                            ackedText = raw
+                            raw.toIntOrNull()?.takeIf { it > 0 }?.let {
+                                onUpdate(settings.copy(notifyAckedAfterMinutes = it))
+                            }
+                        },
+                        label = { Text("Notify again after ACKed for (minutes)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        supportingText = { Text("Re-notification fires once when threshold is crossed.") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+
                 // ── Android notification channel settings (secondary / channel-only mode) ───
                 Spacer(Modifier.height(8.dp))
                 NotifSubheader("Android notification channel settings")

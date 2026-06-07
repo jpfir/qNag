@@ -66,6 +66,11 @@ sealed class NagiosProblem {
     open val freshnessChecksEnabled: Boolean? get() = null
     /** Freshness threshold in seconds (null = not applicable or not reported). */
     open val freshnessThresholdSeconds: Int? get() = null
+    /** Who acknowledged this problem, if available from Nagios statusjson. */
+    open val acknowledgedBy: String? get() = null
+    open val acknowledgementComment: String? get() = null
+    /** Epoch milliseconds when the ACK was submitted, as reported by Nagios. Null = not available. */
+    open val acknowledgementTime: Long? get() = null
 
     data class ServiceProblem(
         override val hostName: String,
@@ -95,6 +100,9 @@ sealed class NagiosProblem {
         override val passiveChecksEnabled: Boolean? = null,
         override val freshnessChecksEnabled: Boolean? = null,
         override val freshnessThresholdSeconds: Int? = null,
+        override val acknowledgedBy: String? = null,
+        override val acknowledgementComment: String? = null,
+        override val acknowledgementTime: Long? = null,
     ) : NagiosProblem() {
         override val uniqueId: String get() = "service|$hostName|$serviceName"
     }
@@ -122,6 +130,9 @@ sealed class NagiosProblem {
         override val passiveChecksEnabled: Boolean? = null,
         override val freshnessChecksEnabled: Boolean? = null,
         override val freshnessThresholdSeconds: Int? = null,
+        override val acknowledgedBy: String? = null,
+        override val acknowledgementComment: String? = null,
+        override val acknowledgementTime: Long? = null,
     ) : NagiosProblem() {
         override val uniqueId: String get() = "host|$hostName"
     }

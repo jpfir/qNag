@@ -23,7 +23,11 @@ import com.exogroup.qnag.data.applyFilters
 import com.exogroup.qnag.data.fetchFailureNotificationId
 import com.exogroup.qnag.data.instanceFingerprintPrefix
 import com.exogroup.qnag.data.problemFingerprint
-import com.exogroup.qnag.data.shouldNotify
+import com.exogroup.qnag.data.AckAgeStore
+import com.exogroup.qnag.data.NagiosProblem
+import com.exogroup.qnag.data.NotificationDecisionReason
+import com.exogroup.qnag.data.ProblemAgeStore
+import com.exogroup.qnag.data.evaluateNotificationDecision
 import com.exogroup.qnag.notifications.NotificationHelper
 import com.exogroup.qnag.notifications.NotificationIconHelper
 import com.exogroup.qnag.notifications.NotificationVisualState
@@ -231,6 +235,9 @@ class NagiosMonitoringService : Service() {
             val allCurrentProblems = mutableListOf<ProblemToNotify>()
             val statusProblems = mutableListOf<ProblemToNotify>()
             val failedInstanceNames = mutableListOf<String>()
+            // Tier 2+ transition tracking: fingerprints that were waiting last poll
+            val prevTier2WaitingFps = loadTier2WaitingFps()
+            val newTier2WaitingFps  = mutableSetOf<String>()
 
             for (instance in targets) {
                 try {
@@ -243,13 +250,58 @@ class NagiosMonitoringService : Service() {
 
                     fingerprints = (fingerprints - knownForInstance) + currentFps
 
+                    val now = System.currentTimeMillis()
+                    // Update age stores for all visible problems before evaluating decisions
+                    for (problem in filtered) {
+                        if (notifSettings.tier2PlusEnabled)
+                            ProblemAgeStore.recordIfAbsent(applicationContext, instance.id, problem)
+                        if (problem.acknowledged)
+                            AckAgeStore.recordIfAbsent(applicationContext, instance.id, problem)
+                        else
+                            AckAgeStore.remove(applicationContext, instance.id, problem)
+                    }
+                    // Prune stale age entries once per poll
+                    if (notifSettings.tier2PlusEnabled) {
+                        val activeAgeKeys = filtered.map { ProblemAgeStore.key(instance.id, it) }.toSet()
+                        ProblemAgeStore.pruneStale(applicationContext, activeAgeKeys)
+                    }
+
                     for (problem in filtered) {
                         statusProblems += ProblemToNotify(instance.id, instance.name, problem)
-                        if (!shouldNotify(problem, notifSettings)) continue
-                        if (notifSettings.notifyOnlyUnacknowledged &&
+                        val decision = evaluateNotificationDecision(
+                            instance.id, problem, notifSettings, now, applicationContext)
+
+                        // Log Tier 2+ transitions (new waiting or newly eligible) — not every poll
+                        val fp = problemFingerprint(instance.id, problem)
+                        if (decision.reason == NotificationDecisionReason.TIER2_WAITING) {
+                            newTier2WaitingFps.add(fp)
+                            if (fp !in prevTier2WaitingFps) {
+                                val waitM = (decision.notifyAfterMs ?: 0L) / 60_000L
+                                val target = if (problem is NagiosProblem.ServiceProblem)
+                                    "${problem.hostName}/${problem.serviceName}" else problem.hostName
+                                EventLog.info(applicationContext, EventLog.CAT_NOTIF,
+                                    "Tier 2+ delay — ${instance.name}: $target, eligible in ~${waitM}m")
+                            }
+                        } else if (decision.shouldNotify &&
+                                   decision.reason == NotificationDecisionReason.TIER2_ELIGIBLE &&
+                                   fp in prevTier2WaitingFps) {
+                            val target = if (problem is NagiosProblem.ServiceProblem)
+                                "${problem.hostName}/${problem.serviceName}" else problem.hostName
+                            EventLog.info(applicationContext, EventLog.CAT_NOTIF,
+                                "Tier 2+ eligible — ${instance.name}: $target")
+                        } else if (decision.reason == NotificationDecisionReason.ACKED_RENOTIFY_ELIGIBLE &&
+                                   fp !in prevTier2WaitingFps) {
+                            val target = if (problem is NagiosProblem.ServiceProblem)
+                                "${problem.hostName}/${problem.serviceName}" else problem.hostName
+                            EventLog.info(applicationContext, EventLog.CAT_NOTIF,
+                                "ACKed alert re-notify eligible — ${instance.name}: $target")
+                        }
+
+                        if (!decision.shouldNotify) continue
+                        // AckSuppressCache: local ACK overlay (not covered by evaluateNotificationDecision)
+                        if (decision.reason != NotificationDecisionReason.ACKED_RENOTIFY_ELIGIBLE &&
                             AckSuppressCache.isSuppressed(applicationContext, instance.id, problem)) continue
                         allCurrentProblems += ProblemToNotify(instance.id, instance.name, problem)
-                        val fp = problemFingerprint(instance.id, problem)
                         val isNew = fp !in knownForInstance
                         if (!cmdSettings.notifyOnlyNewProblems || isNew) {
                             toNotify += ProblemToNotify(instance.id, instance.name, problem)
@@ -357,6 +409,7 @@ class NagiosMonitoringService : Service() {
 
             saveFingerprints(fingerprints)
             saveFailedInstances(failedIds)
+            saveTier2WaitingFps(newTier2WaitingFps)
 
             if (cmdSettings.debugCommandSubmission)
                 android.util.Log.d("qNag", "[service] poll finished, next delay ${effectiveIntervalS}s")
@@ -386,6 +439,15 @@ class NagiosMonitoringService : Service() {
 
     private fun saveFailedInstances(failed: Set<String>) =
         prefs().edit { putString(KEY_FAILED, gson.toJson(failed)) }
+
+    private fun loadTier2WaitingFps(): Set<String> {
+        val json = prefs().getString(KEY_TIER2_WAITING, null) ?: return emptySet()
+        return try { gson.fromJson<Set<String>>(json, object : TypeToken<Set<String>>() {}.type) ?: emptySet() }
+        catch (_: Exception) { emptySet() }
+    }
+
+    private fun saveTier2WaitingFps(fps: Set<String>) =
+        prefs().edit { putString(KEY_TIER2_WAITING, gson.toJson(fps)) }
 
     private fun prefs() =
         applicationContext.getSharedPreferences("qnag_polling_state", Context.MODE_PRIVATE)
@@ -459,8 +521,9 @@ class NagiosMonitoringService : Service() {
     // ── Companion ─────────────────────────────────────────────────────────────
 
     companion object {
-        private const val KEY_FINGERPRINTS = "fingerprints"
-        private const val KEY_FAILED = "failed_instances"
+        private const val KEY_FINGERPRINTS   = "fingerprints"
+        private const val KEY_FAILED         = "failed_instances"
+        private const val KEY_TIER2_WAITING  = "tier2_waiting_fps"
 
         fun start(context: Context) {
             val intent = Intent(context, NagiosMonitoringService::class.java)

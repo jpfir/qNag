@@ -97,6 +97,12 @@ class NagiosApi {
                     passiveChecksEnabled      = d.optBooleanNullable("passive_checks_enabled"),
                     freshnessChecksEnabled    = d.optBooleanNullable("check_freshness"),
                     freshnessThresholdSeconds = d.optInt("freshness_threshold", 0).takeIf { it > 0 },
+                    acknowledgedBy            = d.optStringOrNull("acknowledgement_author")
+                        ?: d.optStringOrNull("ack_author"),
+                    acknowledgementComment    = d.optStringOrNull("acknowledgement_comment")
+                        ?: d.optStringOrNull("ack_comment"),
+                    acknowledgementTime       = d.optEpochMs("acknowledgement_time")
+                        ?: d.optEpochMs("ack_time"),
                 )
             }
         }
@@ -143,6 +149,12 @@ class NagiosApi {
                 passiveChecksEnabled      = d.optBooleanNullable("passive_checks_enabled"),
                 freshnessChecksEnabled    = d.optBooleanNullable("check_freshness"),
                 freshnessThresholdSeconds = d.optInt("freshness_threshold", 0).takeIf { it > 0 },
+                acknowledgedBy            = d.optStringOrNull("acknowledgement_author")
+                    ?: d.optStringOrNull("ack_author"),
+                acknowledgementComment    = d.optStringOrNull("acknowledgement_comment")
+                    ?: d.optStringOrNull("ack_comment"),
+                acknowledgementTime       = d.optEpochMs("acknowledgement_time")
+                    ?: d.optEpochMs("ack_time"),
             )
         }
         return result
@@ -492,6 +504,10 @@ class NagiosApi {
             else -> null
         }
     }
+
+    /** Returns a non-blank string value, or null when absent or blank. */
+    private fun JSONObject.optStringOrNull(key: String): String? =
+        optString(key, "").trim().ifEmpty { null }
 
     /** Returns the field as Boolean?, or null when the field is absent. */
     private fun JSONObject.optBooleanNullable(key: String): Boolean? {

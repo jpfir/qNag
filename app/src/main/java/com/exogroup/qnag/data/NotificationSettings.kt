@@ -46,4 +46,25 @@ data class NotificationSettings(
     val inAppSoundUri: String? = null,
     // When true, show DND-access setup guidance in health section.
     val helpBypassDnd: Boolean = false,
+
+    // ── Tier 2+ notification delay ────────────────────────────────────────────
+    // Keeps alerts visible in the dashboard immediately but delays Android alerting/sound
+    // until the problem has lasted at least the configured time.
+    // Useful to avoid spurious alerts from short transient problems.
+    val tier2PlusEnabled: Boolean = false,
+    // Global delay applied to all states (when tier2PlusUsePerStateDelays = false).
+    val tier2PlusDelayMinutes: Int = 5,
+    // When true, each problem state has its own delay threshold.
+    val tier2PlusUsePerStateDelays: Boolean = false,
+    val tier2HostDownDelayMinutes: Int = 5,
+    val tier2HostUnreachableDelayMinutes: Int = 5,
+    val tier2ServiceCriticalDelayMinutes: Int = 5,
+    val tier2ServiceWarningDelayMinutes: Int = 15,
+    val tier2ServiceUnknownDelayMinutes: Int = 10,
+
+    // ── ACKed alert re-notification ───────────────────────────────────────────
+    // ACKed alerts are normally quiet.  Enable to notify again when an ACKed alert
+    // has remained active for too long — indicating the ACK may be stale.
+    val notifyAckedAfterEnabled: Boolean = false,
+    val notifyAckedAfterMinutes: Int = 120,
 )

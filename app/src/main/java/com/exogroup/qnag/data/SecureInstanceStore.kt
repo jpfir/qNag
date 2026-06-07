@@ -152,6 +152,16 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 useAlarmAudioStream = o.get("useAlarmAudioStream")?.asBoolean ?: true,
                 inAppSoundUri = o.get("inAppSoundUri")?.takeIf { !it.isJsonNull }?.asString,
                 helpBypassDnd = o.get("helpBypassDnd")?.asBoolean ?: false,
+                tier2PlusEnabled = o.get("tier2PlusEnabled")?.asBoolean ?: false,
+                tier2PlusDelayMinutes = o.get("tier2PlusDelayMinutes")?.asInt ?: 5,
+                tier2PlusUsePerStateDelays = o.get("tier2PlusUsePerStateDelays")?.asBoolean ?: false,
+                tier2HostDownDelayMinutes = o.get("tier2HostDownDelayMinutes")?.asInt ?: 5,
+                tier2HostUnreachableDelayMinutes = o.get("tier2HostUnreachableDelayMinutes")?.asInt ?: 5,
+                tier2ServiceCriticalDelayMinutes = o.get("tier2ServiceCriticalDelayMinutes")?.asInt ?: 5,
+                tier2ServiceWarningDelayMinutes = o.get("tier2ServiceWarningDelayMinutes")?.asInt ?: 15,
+                tier2ServiceUnknownDelayMinutes = o.get("tier2ServiceUnknownDelayMinutes")?.asInt ?: 10,
+                notifyAckedAfterEnabled = o.get("notifyAckedAfterEnabled")?.asBoolean ?: false,
+                notifyAckedAfterMinutes = o.get("notifyAckedAfterMinutes")?.asInt ?: 120,
             )
         } catch (_: Exception) { NotificationSettings() }
     }

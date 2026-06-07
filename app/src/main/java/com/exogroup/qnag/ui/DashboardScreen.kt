@@ -27,6 +27,7 @@ import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NotificationSettings
 import com.exogroup.qnag.data.NagiosStatus
 import com.exogroup.qnag.data.applyFilters
+import com.exogroup.qnag.data.tier2DelayMs
 import com.exogroup.qnag.viewmodel.CommandState
 import com.exogroup.qnag.viewmodel.DashboardState
 import com.exogroup.qnag.viewmodel.NagiosViewModel
@@ -195,6 +196,19 @@ fun DashboardScreen(
             (selectedInstance as? InstanceSelection.Single)?.instance?.id ?: instance.id
         }
         nagiosViewModel.isRecheckPending(instId, p)
+    }
+
+    // Tier 2+ waiting indicator — uses lastStateChange only (no context required for UI)
+    val isTier2WaitingFn: (NagiosProblem) -> Boolean = remember(notificationSettings) {
+        val enabled = notificationSettings.tier2PlusEnabled;
+        { p: NagiosProblem ->
+            if (!enabled || p.acknowledged) false
+            else {
+                val sc = p.lastStateChange
+                if (sc == null) false
+                else (System.currentTimeMillis() - sc) < tier2DelayMs(p, notificationSettings)
+            }
+        }
     }
 
     // Reactive visible problems (also applies local-ACK filter when hideAcknowledged=true)
@@ -513,6 +527,10 @@ fun DashboardScreen(
             },
             quickFilter = quickFilter,
             onQuickFilterChanged = { quickFilter = it },
+            tier2PlusActive = notificationSettings.tier2PlusEnabled && notificationSettings.notificationsEnabled,
+            tier2PlusLabel = if (notificationSettings.tier2PlusUsePerStateDelays) "per-state delays"
+                             else "notify after ${notificationSettings.tier2PlusDelayMinutes}m",
+            isTier2Waiting = isTier2WaitingFn,
             onRetry = {
                 when (val sel = selectedInstance) {
                     is InstanceSelection.All -> nagiosViewModel.fetchAlertsForAll(enabledInstances, skipIfRunning = false)
@@ -551,6 +569,9 @@ private fun DashboardContent(
     onSummaryExpandedChanged: (Boolean) -> Unit = {},
     quickFilter: QuickFilter? = null,
     onQuickFilterChanged: (QuickFilter?) -> Unit = {},
+    tier2PlusActive: Boolean = false,
+    tier2PlusLabel: String = "",
+    isTier2Waiting: (NagiosProblem) -> Boolean = { false },
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -578,6 +599,9 @@ private fun DashboardContent(
             if (quickFilter != null) {
                 QuickFilterBanner(filter = quickFilter, onClear = { onQuickFilterChanged(null) })
             }
+            if (tier2PlusActive) {
+                Tier2PlusBanner(label = tier2PlusLabel)
+            }
         }
         when (state) {
             is DashboardState.Error -> {
@@ -593,6 +617,7 @@ private fun DashboardContent(
                         problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
                         onAck = onAck, onRecheck = onRecheck, onUnack = onUnack, onScheduleDowntime = onScheduleDowntime,
+                        isTier2Waiting = isTier2Waiting,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
                         isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
                 }
@@ -611,6 +636,7 @@ private fun DashboardContent(
                         problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
                         onAck = onAck, onRecheck = onRecheck, onUnack = onUnack, onScheduleDowntime = onScheduleDowntime,
+                        isTier2Waiting = isTier2Waiting,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
                         isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
                 } else {
@@ -649,6 +675,7 @@ private fun DashboardContent(
                         onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
                         onAck = onAck, onRecheck = onRecheck, onUnack = onUnack, onScheduleDowntime = onScheduleDowntime,
+                        isTier2Waiting = isTier2Waiting,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = state.problems.size, lastUpdated = state.lastUpdated, stale = false) },
                         isRefreshing = false, onRefresh = onRetry)
                 }
@@ -676,6 +703,7 @@ private fun ProblemList(
     onRecheck: (String) -> Unit,
     onUnack: (String) -> Unit = {},
     onScheduleDowntime: (String) -> Unit = {},
+    isTier2Waiting: (NagiosProblem) -> Boolean = { false },
     header: @Composable () -> Unit,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
@@ -724,6 +752,7 @@ private fun ProblemList(
                             },
                             onUnack = if (problem.acknowledged || locallyAcked) { { onUnack(key) } } else null,
                             onScheduleDowntime = { onScheduleDowntime(key) },
+                            isTier2Waiting = isTier2Waiting(problem),
                             onToggleSelect = { onToggleSelect(key) },
                             onLongPress = { onLongPress(key) },
                             onAck = { onAck(key) },
@@ -808,6 +837,28 @@ private fun SummaryRow(visibleCount: Int, totalCount: Int, lastUpdated: Long?, s
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
         )
+    }
+}
+
+// ── Tier 2+ active banner ─────────────────────────────────────────────────────
+
+@Composable
+private fun Tier2PlusBanner(label: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Tier 2+ active · $label",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 

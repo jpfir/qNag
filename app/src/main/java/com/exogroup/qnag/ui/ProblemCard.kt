@@ -41,6 +41,8 @@ fun ProblemCard(
     // True while a recheck was submitted but Nagios has not yet executed the forced check
     isRecheckPending: Boolean = false,
     // Overflow-menu actions — null = hidden from menu
+    // True when Tier 2+ delay is active and this alert has not yet reached the threshold
+    isTier2Waiting: Boolean = false,
     onOpenDetail: (() -> Unit)? = null,
     onCopyOutput: (() -> Unit)? = null,
     onShare: (() -> Unit)? = null,
@@ -134,6 +136,7 @@ fun ProblemCard(
                     isPendingAck = isPendingAck,
                     instanceName = instanceName,
                     isRecheckPending = isRecheckPending,
+                    isTier2Waiting = isTier2Waiting,
                     onUnack = onUnack,
                     onAck = onAck,
                     onRecheck = onRecheck,
@@ -156,6 +159,7 @@ private fun ProblemCardContent(
     isPendingAck: Boolean,
     instanceName: String = "",
     isRecheckPending: Boolean = false,
+    isTier2Waiting: Boolean = false,
     onUnack: (() -> Unit)? = null,
     onAck: () -> Unit = {},
     onRecheck: () -> Unit = {},
@@ -286,6 +290,7 @@ private fun ProblemCardContent(
                 is NagiosProblem.ServiceProblem -> StatusBadge(serviceStatusLabel(problem.status))
                 is NagiosProblem.HostProblem    -> StatusBadge(hostStatusLabel(problem.status))
             }
+            if (isTier2Waiting) Tier2WaitingBadge()
             if (isNew) NewBadge()
             if (isAcknowledged || isPendingAck) {
                 AckBadge(pending = isPendingAck && !problem.acknowledged)
@@ -457,6 +462,23 @@ private fun StateBadge(label: String, textColor: Color, bgColor: Color) {
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+        )
+    }
+}
+
+/** Tier 2+ waiting chip — shown when Tier 2+ delay is active and the alert has not reached threshold. */
+@Composable
+private fun Tier2WaitingBadge() {
+    Surface(
+        shape = RoundedCornerShape(4.dp),
+        color = Color(0xFFE3F2FD),   // light blue — informational, not alarming
+        contentColor = Color(0xFF1565C0),
+    ) {
+        Text(
+            "T2+",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
         )
     }
 }

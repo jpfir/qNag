@@ -144,3 +144,48 @@ Use Monitoring Health to verify that all layers are functioning correctly before
 qNag is designed to be as reliable as possible on Android, but **Android and OEM restrictions can still interfere**. For critical monitoring environments, qNag should be one alerting path among others — alongside server-side alerting, email, PagerDuty, or a secondary phone.
 
 The Monitoring Health screen and Event Log exist precisely to help you detect when qNag is not polling as expected, so you can take corrective action.
+---
+
+## Tier 2+ Notification Delay
+
+**Location:** Settings → Notifications & Sound → Tier 2+ notification delay.
+
+**Purpose:** Delays Android alerting/sound until an alert has persisted long enough to be
+worth waking someone up. Transient alerts that resolve quickly are visible in the qNag
+dashboard but do not trigger Android sound or notifications.
+
+**Important:** Tier 2+ delays Android *alerting* only. Dashboard visibility is immediate and
+unaffected — all alerts appear in the qNag problem list the moment they are detected.
+
+**How it works:**
+- When Tier 2+ is enabled, each alert's age is compared to the configured delay threshold.
+- Age is derived from Nagios `last_state_change` when available, or from a local
+  first-seen timestamp stored by qNag.
+- Until the threshold is met, the alert is suppressed from Android notifications and sound.
+- When the threshold is crossed, the alert becomes notification-eligible and sounds once
+  (subject to existing cooldown rules).
+- Cards show a **T2+** badge for alerts currently waiting on the delay.
+- A banner "Tier 2+ active · notify after Xm" is shown on the dashboard.
+
+**Per-state delays:** Enable "Use different delay per state" to configure separate thresholds
+for host DOWN, UNREACHABLE, service CRITICAL, WARNING, and UNKNOWN.
+
+**Interaction with other filters:**
+- Downtime and soft-state suppression still apply after the Tier 2+ delay is satisfied.
+- ACKed alerts remain quiet by default even after the Tier 2+ threshold is met.
+- ACKed alert re-notification is a separate setting.
+
+## ACKed Alert Re-Notification
+
+**Location:** Settings → Notifications & Sound → ACKed alert re-notification.
+
+**Purpose:** Alerts that have been acknowledged are normally quiet. This option re-enables
+notification/sound after an ACKed alert has remained active for a configurable duration —
+useful when an ACK is no longer relevant or has been forgotten.
+
+**How it works:**
+- Tracks how long each ACKed alert has been acknowledged, using Nagios's
+  `acknowledgement_time` field when available, or a local timestamp otherwise.
+- When the configured duration is exceeded, the alert becomes eligible for one
+  re-notification (subject to existing fingerprint/cooldown logic).
+- Does not trigger sound on every poll — only on the first crossing of the threshold.
