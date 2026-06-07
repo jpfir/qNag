@@ -350,7 +350,8 @@ private fun ProblemCardContent(
         if (isExpanded) {
             val hasMetadata = problem.lastCheck != null || problem.nextCheck != null ||
                 problem.lastStateChange != null || problem.lastHardStateChange != null ||
-                problem.currentAttempt != null || problem.checkType != null
+                problem.currentAttempt != null || problem.checkType != null ||
+                problem.passiveChecksEnabled != null || problem.freshnessChecksEnabled != null
             if (hasMetadata) {
                 Spacer(Modifier.height(8.dp))
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -386,7 +387,17 @@ private fun CheckMetadataSection(problem: NagiosProblem) {
             val stateLabel = if (problem.isSoftState) "SOFT" else "HARD"
             CheckDetailRow("Attempt", if (maxAtt != null) "$attempt/$maxAtt  $stateLabel" else "$attempt  $stateLabel")
         }
-        problem.checkType?.let { CheckDetailRow("Check type", it) }
+        // check_type = last result type, not the configured mode — label clarifies this
+        problem.checkType?.let { CheckDetailRow("Last result", it) }
+        problem.passiveChecksEnabled?.let {
+            CheckDetailRow("Passive checks", if (it) "enabled" else "disabled")
+        }
+        problem.freshnessChecksEnabled?.let { f ->
+            CheckDetailRow("Freshness checks", if (f) "enabled" else "disabled")
+            if (f) problem.freshnessThresholdSeconds?.let {
+                CheckDetailRow("Freshness threshold", "${it}s")
+            }
+        }
 
         // ── State flags ───────────────────────────────────────────────────────
         val hasStateFlags = problem.acknowledged || problem.scheduledDowntimeDepth > 0 ||
@@ -398,7 +409,7 @@ private fun CheckMetadataSection(problem: NagiosProblem) {
             if (problem.acknowledged) CheckDetailRow("Acknowledged", "yes")
             if (problem.scheduledDowntimeDepth > 0) CheckDetailRow("In downtime", "yes (depth ${problem.scheduledDowntimeDepth})")
             if (!problem.notificationsEnabled) CheckDetailRow("Notifications", "disabled")
-            if (!problem.checksEnabled) CheckDetailRow("Checks", "disabled")
+            if (!problem.checksEnabled) CheckDetailRow("Active checks", "disabled")
             if (problem.isFlapping) CheckDetailRow("Flapping", "yes")
         }
 

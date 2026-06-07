@@ -19,8 +19,13 @@ import androidx.compose.ui.unit.dp
 import com.exogroup.qnag.data.NagiosInstance
 
 /**
- * Displays one card per instance with enable/notifications toggles, an edit button, and a
- * delete button.
+ * Displays one card per instance with monitoring enable / Android-alerts toggles, an edit button,
+ * and a delete button.
+ *
+ * The two toggles are intentionally distinct:
+ *  - "Monitoring" (Enabled) — the instance is queried and shown in the dashboard.
+ *  - "Android alerts" (notificationsEnabled) — the instance contributes to the Android shade
+ *    status notification and per-alert Android notifications.  Does NOT control in-app monitoring.
  *
  * All changes are applied immediately via [onUpdate].
  * Deletion and editing both require confirmation / a dialog.
@@ -152,18 +157,24 @@ private fun InstanceCard(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 LabeledSwitch(
-                    label = "Enabled",
+                    label = "Monitoring",
                     checked = instance.enabled,
                     onCheckedChange = onToggleEnabled,
                     modifier = Modifier.weight(1f),
                 )
                 LabeledSwitch(
-                    label = "Notifications",
+                    label = "Android alerts",
                     checked = instance.notificationsEnabled,
                     onCheckedChange = onToggleNotifications,
                     modifier = Modifier.weight(1f),
                 )
             }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Monitoring: shown in dashboard  ·  Android alerts: shade status & per-alert notifications",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -237,18 +248,24 @@ private fun EditInstanceDialog(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     LabeledSwitch(
-                        label = "Enabled",
+                        label = "Monitoring",
                         checked = enabled,
                         onCheckedChange = { enabled = it },
                         modifier = Modifier.weight(1f),
                     )
                     LabeledSwitch(
-                        label = "Notifications",
+                        label = "Android alerts",
                         checked = notificationsEnabled,
                         onCheckedChange = { notificationsEnabled = it },
                         modifier = Modifier.weight(1f),
                     )
                 }
+                Text(
+                    "Monitoring: instance is queried and shown in the dashboard.\n" +
+                    "Android alerts: contributes to the Android shade status notification and per-alert notifications. Does not affect in-app monitoring.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 error?.let {
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)

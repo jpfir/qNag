@@ -54,8 +54,18 @@ sealed class NagiosProblem {
     open val lastHardStateChange: Long? get() = null
     open val currentAttempt: Int? get() = null
     open val maxAttempts: Int? get() = null
-    /** "active" or "passive" — null when not returned by Nagios. */
+    /**
+     * Last check result type — "active", "passive", "parent", "file", "other", or null.
+     * This is the type of the most recent check result, not the configured check mode.
+     * A passive-only service may show "active" if it was last checked actively.
+     */
     open val checkType: String? get() = null
+    /** Whether passive check results are accepted (null = not reported by this Nagios version). */
+    open val passiveChecksEnabled: Boolean? get() = null
+    /** Whether freshness checking is enabled for this object (null = not reported). */
+    open val freshnessChecksEnabled: Boolean? get() = null
+    /** Freshness threshold in seconds (null = not applicable or not reported). */
+    open val freshnessThresholdSeconds: Int? get() = null
 
     data class ServiceProblem(
         override val hostName: String,
@@ -82,6 +92,9 @@ sealed class NagiosProblem {
         override val currentAttempt: Int? = null,
         override val maxAttempts: Int? = null,
         override val checkType: String? = null,
+        override val passiveChecksEnabled: Boolean? = null,
+        override val freshnessChecksEnabled: Boolean? = null,
+        override val freshnessThresholdSeconds: Int? = null,
     ) : NagiosProblem() {
         override val uniqueId: String get() = "service|$hostName|$serviceName"
     }
@@ -106,6 +119,9 @@ sealed class NagiosProblem {
         override val currentAttempt: Int? = null,
         override val maxAttempts: Int? = null,
         override val checkType: String? = null,
+        override val passiveChecksEnabled: Boolean? = null,
+        override val freshnessChecksEnabled: Boolean? = null,
+        override val freshnessThresholdSeconds: Int? = null,
     ) : NagiosProblem() {
         override val uniqueId: String get() = "host|$hostName"
     }

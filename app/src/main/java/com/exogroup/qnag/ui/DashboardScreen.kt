@@ -3,6 +3,7 @@ package com.exogroup.qnag.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -24,6 +25,7 @@ import com.exogroup.qnag.data.FilterSettings
 import com.exogroup.qnag.data.NagiosInstance
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NotificationSettings
+import com.exogroup.qnag.data.NagiosStatus
 import com.exogroup.qnag.data.applyFilters
 import com.exogroup.qnag.viewmodel.CommandState
 import com.exogroup.qnag.viewmodel.DashboardState
@@ -40,6 +42,63 @@ sealed class InstanceSelection {
     object All : InstanceSelection()
     /** Fetch and show problems from a single instance. */
     data class Single(val instance: NagiosInstance) : InstanceSelection()
+}
+
+// ── Quick filter ───────────────────────────────────────────────────────────────
+
+/** Transient dashboard-level filter applied on top of Settings filters. */
+internal enum class QuickFilter {
+    HOST_DOWN, HOST_UNREACHABLE, SERVICE_CRITICAL, SERVICE_WARNING, SERVICE_UNKNOWN;
+
+    val displayLabel: String get() = when (this) {
+        HOST_DOWN -> "Host DOWN"
+        HOST_UNREACHABLE -> "Host UNREACHABLE"
+        SERVICE_CRITICAL -> "Critical services"
+        SERVICE_WARNING -> "Warning services"
+        SERVICE_UNKNOWN -> "Unknown services"
+    }
+}
+
+private fun applyQuickFilter(problems: List<NagiosProblem>, filter: QuickFilter?): List<NagiosProblem> {
+    if (filter == null) return problems
+    return problems.filter { p -> when (filter) {
+        QuickFilter.HOST_DOWN         -> p is NagiosProblem.HostProblem && p.status == NagiosStatus.HOST_DOWN
+        QuickFilter.HOST_UNREACHABLE  -> p is NagiosProblem.HostProblem && p.status == NagiosStatus.HOST_UNREACHABLE
+        QuickFilter.SERVICE_CRITICAL  -> p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_CRITICAL
+        QuickFilter.SERVICE_WARNING   -> p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_WARNING
+        QuickFilter.SERVICE_UNKNOWN   -> p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_UNKNOWN
+    } }
+}
+
+// ── Problem list rows (for section headers) ───────────────────────────────────
+
+private sealed class ProblemListRow {
+    data class SectionHead(val label: String, val count: Int) : ProblemListRow()
+    data class Item(val problem: NagiosProblem) : ProblemListRow()
+}
+
+private fun problemSectionLabel(p: NagiosProblem): String = when {
+    p is NagiosProblem.HostProblem && p.status == NagiosStatus.HOST_DOWN         -> "Host DOWN"
+    p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_CRITICAL -> "Critical services"
+    p is NagiosProblem.HostProblem && p.status == NagiosStatus.HOST_UNREACHABLE   -> "Host UNREACHABLE"
+    p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_UNKNOWN  -> "Unknown services"
+    p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_WARNING  -> "Warning services"
+    else -> "Other"
+}
+
+private fun buildSectionedRows(problems: List<NagiosProblem>): List<ProblemListRow> {
+    val countByLabel = problems.groupingBy { problemSectionLabel(it) }.eachCount()
+    val rows = mutableListOf<ProblemListRow>()
+    var lastLabel: String? = null
+    for (p in problems) {
+        val label = problemSectionLabel(p)
+        if (label != lastLabel) {
+            rows += ProblemListRow.SectionHead(label, countByLabel[label] ?: 0)
+            lastLabel = label
+        }
+        rows += ProblemListRow.Item(p)
+    }
+    return rows
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -111,7 +170,8 @@ fun DashboardScreen(
         }
     }
 
-    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    var selectedIds  by remember { mutableStateOf(setOf<String>()) }
+    var quickFilter  by remember { mutableStateOf<QuickFilter?>(null) }
     val isSelectionMode = selectedIds.isNotEmpty()
     val showInstanceNames = selectedInstance is InstanceSelection.All
 
@@ -150,7 +210,7 @@ fun DashboardScreen(
         }
     }
 
-    LaunchedEffect(selectedInstance) { selectedIds = emptySet() }
+    LaunchedEffect(selectedInstance) { selectedIds = emptySet(); quickFilter = null }
     LaunchedEffect(visibleProblems) {
         val visibleKeys = visibleProblems.map { problemKey(it) }.toSet()
         val updated = selectedIds.intersect(visibleKeys)
@@ -451,6 +511,8 @@ fun DashboardScreen(
                 summaryExpanded = expanded
                 onSummaryExpandedChanged(expanded)
             },
+            quickFilter = quickFilter,
+            onQuickFilterChanged = { quickFilter = it },
             onRetry = {
                 when (val sel = selectedInstance) {
                     is InstanceSelection.All -> nagiosViewModel.fetchAlertsForAll(enabledInstances, skipIfRunning = false)
@@ -487,6 +549,8 @@ private fun DashboardContent(
     onScheduleDowntime: (String) -> Unit = {},
     summaryExpanded: Boolean = true,
     onSummaryExpandedChanged: (Boolean) -> Unit = {},
+    quickFilter: QuickFilter? = null,
+    onQuickFilterChanged: (QuickFilter?) -> Unit = {},
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -507,8 +571,13 @@ private fun DashboardContent(
                 onSelectInstance = onSelectInstance,
                 expanded = summaryExpanded,
                 onExpandedChanged = onSummaryExpandedChanged,
+                quickFilter = quickFilter,
+                onQuickFilterChanged = onQuickFilterChanged,
             )
             Spacer(Modifier.height(4.dp))
+            if (quickFilter != null) {
+                QuickFilterBanner(filter = quickFilter, onClear = { onQuickFilterChanged(null) })
+            }
         }
         when (state) {
             is DashboardState.Error -> {
@@ -516,7 +585,8 @@ private fun DashboardContent(
                 val stale = state.previousProblems
                 if (!stale.isNullOrEmpty()) {
                     Spacer(Modifier.height(4.dp))
-                    val visible = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
+                    val base = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
+                    val visible = applyQuickFilter(base, quickFilter)
                     ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         isRecheckPending = isRecheckPending,
@@ -533,7 +603,8 @@ private fun DashboardContent(
                 if (stale != null) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(4.dp))
-                    val visible = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
+                    val base = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
+                    val visible = applyQuickFilter(base, quickFilter)
                     ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         isRecheckPending = isRecheckPending,
@@ -555,7 +626,8 @@ private fun DashboardContent(
                     PartialErrorBanner(state.partialErrors)
                     Spacer(Modifier.height(4.dp))
                 }
-                val visible = applyFiltersAndLocalAck(state.problems, filterSettings, isLocallyAcknowledged)
+                val base = applyFiltersAndLocalAck(state.problems, filterSettings, isLocallyAcknowledged)
+                val visible = applyQuickFilter(base, quickFilter)
                 when {
                     state.problems.isEmpty() && state.partialErrors.isEmpty() ->
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -611,6 +683,7 @@ private fun ProblemList(
     val context = androidx.compose.ui.platform.LocalContext.current
     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
 
+    val rows = remember(problems) { buildSectionedRows(problems) }
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = onRefresh,
@@ -618,37 +691,46 @@ private fun ProblemList(
     ) {
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             item { header() }
-            items(problems, key = { problemKey(it) }) { problem ->
-                val key = problemKey(problem)
-                val locallyAcked = isLocallyAcknowledged(problem)
-                ProblemCard(
-                    problem = problem,
-                    isSelected = selectedIds.contains(key),
-                    isSelectionMode = isSelectionMode,
-                    isAcknowledged = problem.acknowledged || locallyAcked,
-                    isPendingAck = locallyAcked && !problem.acknowledged,
-                    instanceName = if (showInstanceNames) problem.instanceName else "",
-                    isRecheckPending = isRecheckPending(problem),
-                    onOpenDetail = { onOpenProblemDetail(problem) },
-                    onCopyOutput = {
-                        clipboardManager.setText(
-                            androidx.compose.ui.text.AnnotatedString(problem.pluginOutput)
+            items(rows, key = { row -> when (row) {
+                is ProblemListRow.SectionHead -> "section_${row.label}"
+                is ProblemListRow.Item -> problemKey(row.problem)
+            }}) { row ->
+                when (row) {
+                    is ProblemListRow.SectionHead -> ProblemSectionHeader(row.label, row.count)
+                    is ProblemListRow.Item -> {
+                        val problem = row.problem
+                        val key = problemKey(problem)
+                        val locallyAcked = isLocallyAcknowledged(problem)
+                        ProblemCard(
+                            problem = problem,
+                            isSelected = selectedIds.contains(key),
+                            isSelectionMode = isSelectionMode,
+                            isAcknowledged = problem.acknowledged || locallyAcked,
+                            isPendingAck = locallyAcked && !problem.acknowledged,
+                            instanceName = if (showInstanceNames) problem.instanceName else "",
+                            isRecheckPending = isRecheckPending(problem),
+                            onOpenDetail = { onOpenProblemDetail(problem) },
+                            onCopyOutput = {
+                                clipboardManager.setText(
+                                    androidx.compose.ui.text.AnnotatedString(problem.pluginOutput)
+                                )
+                            },
+                            onShare = {
+                                val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(android.content.Intent.EXTRA_TEXT, buildAlertSummary(problem))
+                                }
+                                context.startActivity(android.content.Intent.createChooser(intent, "Share alert"))
+                            },
+                            onUnack = if (problem.acknowledged || locallyAcked) { { onUnack(key) } } else null,
+                            onScheduleDowntime = { onScheduleDowntime(key) },
+                            onToggleSelect = { onToggleSelect(key) },
+                            onLongPress = { onLongPress(key) },
+                            onAck = { onAck(key) },
+                            onRecheck = { onRecheck(key) },
                         )
-                    },
-                    onShare = {
-                        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(android.content.Intent.EXTRA_TEXT, buildAlertSummary(problem))
-                        }
-                        context.startActivity(android.content.Intent.createChooser(intent, "Share alert"))
-                    },
-                    onUnack = if (problem.acknowledged || locallyAcked) { { onUnack(key) } } else null,
-                    onScheduleDowntime = { onScheduleDowntime(key) },
-                    onToggleSelect = { onToggleSelect(key) },
-                    onLongPress = { onLongPress(key) },
-                    onAck = { onAck(key) },
-                    onRecheck = { onRecheck(key) },
-                )
+                    }
+                }
             }
         }
     }
@@ -705,21 +787,75 @@ private fun InstanceSelector(
 
 @Composable
 private fun SummaryRow(visibleCount: Int, totalCount: Int, lastUpdated: Long?, stale: Boolean) {
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val countText = if (visibleCount == totalCount) "$totalCount problem${if (totalCount != 1) "s" else ""}"
+            else "$visibleCount visible / $totalCount total"
+            Text(countText, style = MaterialTheme.typography.labelMedium)
+            val timeText = when {
+                lastUpdated != null -> "Updated: ${formatTime(lastUpdated)}"
+                stale -> "Stale data"
+                else -> ""
+            }
+            if (timeText.isNotEmpty()) Text(timeText, style = MaterialTheme.typography.labelSmall)
+        }
+        Text(
+            "Severity first · newest within state",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+        )
+    }
+}
+
+// ── Quick filter banner ───────────────────────────────────────────────────────
+
+@Composable
+private fun QuickFilterBanner(filter: QuickFilter, onClear: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val countText = if (visibleCount == totalCount) "$totalCount problem${if (totalCount != 1) "s" else ""}"
-        else "$visibleCount visible / $totalCount total"
-        Text(countText, style = MaterialTheme.typography.labelMedium)
-        val timeText = when {
-            lastUpdated != null -> "Updated: ${formatTime(lastUpdated)}"
-            stale -> "Stale data"
-            else -> ""
+        Text(
+            "Showing: ${filter.displayLabel}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(
+            onClick = onClear,
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+        ) {
+            Text("Clear", style = MaterialTheme.typography.labelSmall)
         }
-        if (timeText.isNotEmpty()) Text(timeText, style = MaterialTheme.typography.labelSmall)
     }
+}
+
+// ── Section header inside problem list ────────────────────────────────────────
+
+@Composable
+private fun ProblemSectionHeader(label: String, count: Int) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            "$count",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
 /** Non-fatal banner shown when some (but not all) instances failed in ALL mode. */

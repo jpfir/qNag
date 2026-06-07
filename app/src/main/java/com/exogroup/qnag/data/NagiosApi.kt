@@ -94,6 +94,9 @@ class NagiosApi {
                     currentAttempt     = d.optInt("current_attempt", 0).takeIf { it > 0 },
                     maxAttempts        = d.optInt("max_check_attempts", 0).takeIf { it > 0 },
                     checkType          = d.optCheckType("check_type"),
+                    passiveChecksEnabled      = d.optBooleanNullable("passive_checks_enabled"),
+                    freshnessChecksEnabled    = d.optBooleanNullable("check_freshness"),
+                    freshnessThresholdSeconds = d.optInt("freshness_threshold", 0).takeIf { it > 0 },
                 )
             }
         }
@@ -137,6 +140,9 @@ class NagiosApi {
                 currentAttempt     = d.optInt("current_attempt", 0).takeIf { it > 0 },
                 maxAttempts        = d.optInt("max_check_attempts", 0).takeIf { it > 0 },
                 checkType          = d.optCheckType("check_type"),
+                passiveChecksEnabled      = d.optBooleanNullable("passive_checks_enabled"),
+                freshnessChecksEnabled    = d.optBooleanNullable("check_freshness"),
+                freshnessThresholdSeconds = d.optInt("freshness_threshold", 0).takeIf { it > 0 },
             )
         }
         return result
@@ -464,11 +470,40 @@ class NagiosApi {
         return if (num < 10_000_000_000L) num * 1000L else num
     }
 
-    /** Parse check_type field: 0 = active, 1 = passive. */
-    private fun JSONObject.optCheckType(key: String): String? = when (optInt(key, -1)) {
-        0 -> "active"
-        1 -> "passive"
-        else -> null
+    /**
+     * Parse check_type: 0=active, 1=passive, 2=parent, 3=file, 4=other.
+     * Also handles numeric strings returned by some Nagios/aNag variants.
+     * Returns null when the field is absent or unrecognised.
+     */
+    private fun JSONObject.optCheckType(key: String): String? {
+        val raw = opt(key) ?: return null
+        val n = when (raw) {
+            is Int -> raw
+            is Long -> raw.toInt()
+            is String -> raw.toIntOrNull() ?: return raw.trim().takeIf { it.isNotBlank() }
+            else -> return null
+        }
+        return when (n) {
+            0 -> "active"
+            1 -> "passive"
+            2 -> "parent"
+            3 -> "file"
+            4 -> "other"
+            else -> null
+        }
+    }
+
+    /** Returns the field as Boolean?, or null when the field is absent. */
+    private fun JSONObject.optBooleanNullable(key: String): Boolean? {
+        val v = opt(key) ?: return null
+        return when {
+            v is Boolean -> v
+            v is Int -> v != 0
+            v is Long -> v != 0L
+            v is String && (v == "1" || v.equals("true", ignoreCase = true)) -> true
+            v is String && (v == "0" || v.equals("false", ignoreCase = true)) -> false
+            else -> null
+        }
     }
 
     private fun parseSoftState(obj: JSONObject, key: String): Boolean {

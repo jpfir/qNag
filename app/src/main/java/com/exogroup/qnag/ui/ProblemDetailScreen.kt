@@ -309,7 +309,15 @@ private fun DetailMetadataFull(problem: NagiosProblem) {
             val stateLabel = if (problem.isSoftState) "SOFT" else "HARD"
             DetailRow("Attempt", if (maxAtt != null) "$attempt/$maxAtt  $stateLabel" else "$attempt  $stateLabel")
         }
-        problem.checkType?.let { DetailRow("Check type", it) }
+        // check_type = last result type, not configured check mode
+        problem.checkType?.let { DetailRow("Last result", it) }
+        problem.passiveChecksEnabled?.let {
+            DetailRow("Passive checks", if (it) "enabled" else "disabled")
+        }
+        problem.freshnessChecksEnabled?.let { f ->
+            DetailRow("Freshness checks", if (f) "enabled" else "disabled")
+            if (f) problem.freshnessThresholdSeconds?.let { DetailRow("Freshness threshold", "${it}s") }
+        }
 
         Spacer(Modifier.height(4.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -319,7 +327,7 @@ private fun DetailMetadataFull(problem: NagiosProblem) {
         DetailRow("Acknowledged", if (problem.acknowledged) "yes" else "no")
         DetailRow("In downtime", if (problem.scheduledDowntimeDepth > 0) "yes (depth ${problem.scheduledDowntimeDepth})" else "no")
         DetailRow("Notifications", if (problem.notificationsEnabled) "enabled" else "disabled")
-        DetailRow("Checks", if (problem.checksEnabled) "enabled" else "disabled")
+        DetailRow("Active checks", if (problem.checksEnabled) "enabled" else "disabled")
         DetailRow("Flapping", if (problem.isFlapping) "yes" else "no")
 
         // Host state (service problems only)

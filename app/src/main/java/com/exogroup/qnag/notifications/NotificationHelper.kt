@@ -240,12 +240,14 @@ object NotificationHelper {
     // ── Summary notification (SUMMARY_ONLY / GROUPED_DETAILS modes) ──────────
 
     /**
-     * Posts or updates the single compact alert-summary notification (ALERT_SUMMARY_NOTIF_ID).
+     * Posts or updates the alert-summary notification (ALERT_SUMMARY_NOTIF_ID).
      *
-     * This is SEPARATE from the quiet foreground service notification (MONITORING_SERVICE_NOTIF_ID).
-     * In reliability mode the notification shade shows both:
-     *   • "qNag monitoring active – Checking 2 instances every 30s"  (quiet, ongoing)
-     *   • "qNag: 3 critical, 7 warning – EvoExads: C3·W6; Exo: W1"  (audible on new/worse state)
+     * **When called**: only by [NagiosPollingWorker] (WorkManager / background mode) when the
+     * foreground service is NOT active. In Reliability Mode the foreground service embeds the
+     * alert summary directly into MONITORING_SERVICE_NOTIF_ID and does NOT call this function —
+     * that is the one-notification design for foreground mode.
+     *
+     * In PER_PROBLEM mode this function is not called; [notifyBatch] handles individual alerts.
      *
      * @param newProblems   Problems that are new this poll cycle — drive sound decisions.
      * @param allProblems   All current problems passing notification filters — drive title/body.

@@ -115,9 +115,11 @@ class NagiosMonitoringService : Service() {
         // Foreground service is active — cancel WorkManager to avoid double notifications
         BackgroundPollingScheduler.cancel(applicationContext)
         MonitoringHealth.recordServiceStart(applicationContext)
-        // Cancel any lingering background alert-summary notification — in foreground mode
-        // the ONE foreground notification carries both monitoring status and alert summary.
+        // Cancel any lingering background notifications — in foreground/Reliability Mode the ONE
+        // foreground notification (MONITORING_SERVICE_NOTIF_ID) carries the full alert summary.
+        // Stale and alert-summary notifications posted by WorkManager are redundant here.
         NotificationHelper.cancelAlertSummary(applicationContext)
+        NotificationHelper.cancelStale(applicationContext)
 
         // Schedule (or refresh) the Exact Alarm Watchdog so it monitors this service.
         ExactAlarmWatchdogScheduler.schedule(applicationContext, settings)
@@ -222,6 +224,7 @@ class NagiosMonitoringService : Service() {
             var failedIds = loadFailedInstances()
             val toNotify = mutableListOf<ProblemToNotify>()
             val allCurrentProblems = mutableListOf<ProblemToNotify>()
+            val statusProblems = mutableListOf<ProblemToNotify>()
             val failedInstanceNames = mutableListOf<String>()
 
             for (instance in targets) {
@@ -236,6 +239,7 @@ class NagiosMonitoringService : Service() {
                     fingerprints = (fingerprints - knownForInstance) + currentFps
 
                     for (problem in filtered) {
+                        statusProblems += ProblemToNotify(instance.id, instance.name, problem)
                         if (!shouldNotify(problem, notifSettings)) continue
                         if (notifSettings.notifyOnlyUnacknowledged &&
                             AckSuppressCache.isSuppressed(applicationContext, instance.id, problem)) continue
@@ -259,8 +263,7 @@ class NagiosMonitoringService : Service() {
                 } catch (e: Exception) {
                     val safeError = sanitizeError(e.message)
                     when (notifSettings.notificationMode) {
-                        NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
-                            failedInstanceNames += instance.name
+                        NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS -> Unit
                         NotificationMode.PER_PROBLEM ->
                             if (cmdSettings.notifyOnFetchFailure && instance.id !in failedIds) {
                                 NotificationHelper.notifyFetchFailure(applicationContext, instance.id, instance.name, safeError)
@@ -277,7 +280,7 @@ class NagiosMonitoringService : Service() {
             when (notifSettings.notificationMode) {
                 NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS -> {
                     val (summaryTitle, bodyLines) = NotificationHelper.buildSummaryContent(
-                        allCurrentProblems, failedInstanceNames
+                        statusProblems, failedInstanceNames
                     )
                     val subtitle = "checking every ${effectiveIntervalS}s"
                     val contentText = "${targets.size} instance${if (targets.size != 1) "s" else ""} · $subtitle"
@@ -285,7 +288,7 @@ class NagiosMonitoringService : Service() {
                         bodyLines.joinToString("\n") + "\n$subtitle"
                     else subtitle
                     // Derive visual state from the current worst alert state and store for reuse
-                    val visualState = deriveVisualStateFromProblems(allCurrentProblems, failedInstanceNames.size)
+                    val visualState = deriveVisualStateFromProblems(statusProblems, failedInstanceNames.size)
                     currentVisualState = visualState
                     if (cmdSettings.debugCommandSubmission) {
                         android.util.Log.d("qNag", "[notify] visualState=$visualState " +
@@ -305,23 +308,40 @@ class NagiosMonitoringService : Service() {
                         debug                = cmdSettings.debugCommandSubmission,
                     )
                 }
-                NotificationMode.PER_PROBLEM ->
+                NotificationMode.PER_PROBLEM -> {
+                    val (summaryTitle, bodyLines) = NotificationHelper.buildSummaryContent(
+                        statusProblems, failedInstanceNames
+                    )
+                    val subtitle = "checking every ${effectiveIntervalS}s"
+                    val contentText = "${targets.size} instance${if (targets.size != 1) "s" else ""} · $subtitle"
+                    val bigText = if (bodyLines.isNotEmpty())
+                        bodyLines.joinToString("\n") + "\n$subtitle"
+                    else subtitle
+                    val visualState = deriveVisualStateFromProblems(statusProblems, failedInstanceNames.size)
+                    currentVisualState = visualState
+                    updateForegroundNotification(summaryTitle, contentText, bigText,
+                        visualStateColor(visualState), visualState)
                     NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
+                }
             }
 
             MonitoringHealth.recordPollFinished(applicationContext)
 
-            // ── Stale monitoring self-alert ───────────────────────────────────────
-            if (cmdSettings.staleMonitoringAlertEnabled) {
+            // ── Stale monitoring self-check ───────────────────────────────────────
+            // In foreground/Reliability Mode the one-notification design applies:
+            // stale state is already reflected in the foreground notification via the
+            // FETCH_FAILURE visual state and the "N instances failed" title. Posting a
+            // separate STALE_NOTIF_ID here would create a second qNag notification.
+            // Always cancel any stale notification posted by WorkManager runs that
+            // occurred before the service started, and log when stale is detected.
+            NotificationHelper.cancelStale(applicationContext)
+            if (cmdSettings.staleMonitoringAlertEnabled && cmdSettings.debugCommandSubmission) {
                 val lastSuccess = MonitoringHealth.getSnapshot(applicationContext).lastSuccessfulPollAt
                 if (lastSuccess != null) {
                     val staleMs = cmdSettings.monitoringStaleThresholdMinutes * 60_000L
                     val ageMs = System.currentTimeMillis() - lastSuccess
                     if (ageMs > staleMs) {
-                        val minAgo = ageMs / 60_000L
-                        NotificationHelper.notifyStale(applicationContext, "No successful poll in ${minAgo}m")
-                    } else {
-                        NotificationHelper.cancelStale(applicationContext)
+                        android.util.Log.w("qNag", "[service] monitoring stale: no successful poll in ${ageMs / 60_000L}m (foreground notif reflects this)")
                     }
                 }
             }

@@ -1,6 +1,7 @@
 package com.exogroup.qnag.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
@@ -14,6 +15,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -30,13 +33,16 @@ import com.exogroup.qnag.data.NagiosInstance
  * Single mode — one compact status row for the selected instance.
  */
 @Composable
-fun InstanceSummaryPanel(
+internal fun InstanceSummaryPanel(
     summaries: List<InstanceSummary>,
     isAllMode: Boolean,
     enabledInstances: List<NagiosInstance>,
     onSelectInstance: (NagiosInstance) -> Unit,
     expanded: Boolean = true,
     onExpandedChanged: (Boolean) -> Unit = {},
+    // Quick filter — null means no active filter; clicking a chip toggles it
+    quickFilter: QuickFilter? = null,
+    onQuickFilterChanged: (QuickFilter?) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     if (summaries.isEmpty()) return
@@ -48,6 +54,8 @@ fun InstanceSummaryPanel(
             onSelectInstance = onSelectInstance,
             expanded = expanded,
             onToggleExpand = { onExpandedChanged(!expanded) },
+            quickFilter = quickFilter,
+            onQuickFilterChanged = onQuickFilterChanged,
             modifier = modifier,
         )
     } else {
@@ -64,6 +72,8 @@ private fun AllModeSummary(
     onSelectInstance: (NagiosInstance) -> Unit,
     expanded: Boolean,
     onToggleExpand: () -> Unit,
+    quickFilter: QuickFilter? = null,
+    onQuickFilterChanged: (QuickFilter?) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val totalDown = summaries.sumOf { it.hostDown }
@@ -109,17 +119,53 @@ private fun AllModeSummary(
                     }
                 }
                 Spacer(Modifier.height(2.dp))
-                // Severity badges — each state has its own color
+                // Severity badges — tappable quick filters. Active badge is outlined.
+                // TODO: instance-specific chip filtering (tap instance card chip to filter to that instance+state)
                 if (hasProblems) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (totalDown > 0)        SummaryBadge("D$totalDown", MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer)
-                        if (totalUnreachable > 0) SummaryBadge("U$totalUnreachable", Color(0xFFFFF3E0), Color(0xFFE65100))
-                        if (totalCritical > 0)    SummaryBadge("C$totalCritical", MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer)
-                        if (totalWarning > 0)     SummaryBadge("W$totalWarning", Color(0xFFFFF3CD), Color(0xFF856404))
-                        if (totalUnknown > 0)     SummaryBadge("N$totalUnknown", Color(0xFFEDE7F6), Color(0xFF4A148C))
+                        if (totalDown > 0) SummaryBadge(
+                            label = "D$totalDown",
+                            bgColor = MaterialTheme.colorScheme.errorContainer,
+                            textColor = MaterialTheme.colorScheme.onErrorContainer,
+                            contentDescription = "$totalDown host${if (totalDown != 1) "s" else ""} down",
+                            isActive = quickFilter == QuickFilter.HOST_DOWN,
+                            onClick = { onQuickFilterChanged(if (quickFilter == QuickFilter.HOST_DOWN) null else QuickFilter.HOST_DOWN) },
+                        )
+                        if (totalUnreachable > 0) SummaryBadge(
+                            label = "U$totalUnreachable",
+                            bgColor = Color(0xFFFFF3E0),
+                            textColor = Color(0xFFE65100),
+                            contentDescription = "$totalUnreachable host${if (totalUnreachable != 1) "s" else ""} unreachable",
+                            isActive = quickFilter == QuickFilter.HOST_UNREACHABLE,
+                            onClick = { onQuickFilterChanged(if (quickFilter == QuickFilter.HOST_UNREACHABLE) null else QuickFilter.HOST_UNREACHABLE) },
+                        )
+                        if (totalCritical > 0) SummaryBadge(
+                            label = "C$totalCritical",
+                            bgColor = MaterialTheme.colorScheme.errorContainer,
+                            textColor = MaterialTheme.colorScheme.onErrorContainer,
+                            contentDescription = "$totalCritical critical service${if (totalCritical != 1) "s" else ""}",
+                            isActive = quickFilter == QuickFilter.SERVICE_CRITICAL,
+                            onClick = { onQuickFilterChanged(if (quickFilter == QuickFilter.SERVICE_CRITICAL) null else QuickFilter.SERVICE_CRITICAL) },
+                        )
+                        if (totalWarning > 0) SummaryBadge(
+                            label = "W$totalWarning",
+                            bgColor = Color(0xFFFFF3CD),
+                            textColor = Color(0xFF856404),
+                            contentDescription = "$totalWarning warning service${if (totalWarning != 1) "s" else ""}",
+                            isActive = quickFilter == QuickFilter.SERVICE_WARNING,
+                            onClick = { onQuickFilterChanged(if (quickFilter == QuickFilter.SERVICE_WARNING) null else QuickFilter.SERVICE_WARNING) },
+                        )
+                        if (totalUnknown > 0) SummaryBadge(
+                            label = "N$totalUnknown",
+                            bgColor = Color(0xFFEDE7F6),
+                            textColor = Color(0xFF4A148C),
+                            contentDescription = "$totalUnknown unknown service${if (totalUnknown != 1) "s" else ""}",
+                            isActive = quickFilter == QuickFilter.SERVICE_UNKNOWN,
+                            onClick = { onQuickFilterChanged(if (quickFilter == QuickFilter.SERVICE_UNKNOWN) null else QuickFilter.SERVICE_UNKNOWN) },
+                        )
                     }
                 } else if (failedCount == 0) {
                     Text(
@@ -307,10 +353,33 @@ private fun instanceSeverityChips(summary: InstanceSummary): List<ChipSpec> = wh
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
-/** Compact severity badge shown in the collapsed ALL view header. */
+/**
+ * Compact severity badge in the ALL-mode summary header.
+ *
+ * When [onClick] is provided the badge acts as a quick filter toggle.
+ * [isActive] adds a border to show the filter is active.
+ * [contentDescription] is used for accessibility.
+ */
 @Composable
-private fun SummaryBadge(label: String, bgColor: Color, textColor: Color) {
-    Surface(shape = RoundedCornerShape(4.dp), color = bgColor, contentColor = textColor) {
+private fun SummaryBadge(
+    label: String,
+    bgColor: Color,
+    textColor: Color,
+    contentDescription: String? = null,
+    isActive: Boolean = false,
+    onClick: (() -> Unit)? = null,
+) {
+    Surface(
+        shape = RoundedCornerShape(4.dp),
+        color = bgColor,
+        contentColor = textColor,
+        border = if (isActive) BorderStroke(2.dp, textColor) else null,
+        modifier = Modifier
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(if (contentDescription != null) Modifier.semantics {
+                this.contentDescription = contentDescription
+            } else Modifier),
+    ) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,

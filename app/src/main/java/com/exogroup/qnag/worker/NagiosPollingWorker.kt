@@ -1,6 +1,7 @@
 package com.exogroup.qnag.worker
 
 import android.content.Context
+import androidx.core.content.edit
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.exogroup.qnag.data.AckSuppressCache
@@ -159,7 +160,7 @@ class NagiosPollingWorker(
     }
 
     private fun saveFingerprints(fps: Set<String>) {
-        prefs().edit().putString(KEY_FINGERPRINTS, gson.toJson(fps)).apply()
+        prefs().edit { putString(KEY_FINGERPRINTS, gson.toJson(fps)) }
     }
 
     private fun loadFailedInstances(): Set<String> {
@@ -173,7 +174,7 @@ class NagiosPollingWorker(
     }
 
     private fun saveFailedInstances(failed: Set<String>) {
-        prefs().edit().putString(KEY_FAILED, gson.toJson(failed)).apply()
+        prefs().edit { putString(KEY_FAILED, gson.toJson(failed)) }
     }
 
     private fun prefs() =
