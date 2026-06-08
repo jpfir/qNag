@@ -43,6 +43,8 @@ internal fun InstanceSummaryPanel(
     // Quick filter — null means no active filter; clicking a chip toggles it
     quickFilter: QuickFilter? = null,
     onQuickFilterChanged: (QuickFilter?) -> Unit = {},
+    // Called when the user taps a severity chip on an individual instance card
+    onInstanceChipSelected: ((NagiosInstance, QuickFilter) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     if (summaries.isEmpty()) return
@@ -56,6 +58,7 @@ internal fun InstanceSummaryPanel(
             onToggleExpand = { onExpandedChanged(!expanded) },
             quickFilter = quickFilter,
             onQuickFilterChanged = onQuickFilterChanged,
+            onInstanceChipSelected = onInstanceChipSelected,
             modifier = modifier,
         )
     } else {
@@ -74,6 +77,7 @@ private fun AllModeSummary(
     onToggleExpand: () -> Unit,
     quickFilter: QuickFilter? = null,
     onQuickFilterChanged: (QuickFilter?) -> Unit = {},
+    onInstanceChipSelected: ((NagiosInstance, QuickFilter) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val totalDown = summaries.sumOf { it.hostDown }
@@ -120,7 +124,6 @@ private fun AllModeSummary(
                 }
                 Spacer(Modifier.height(2.dp))
                 // Severity badges — tappable quick filters. Active badge is outlined.
-                // TODO: instance-specific chip filtering (tap instance card chip to filter to that instance+state)
                 if (hasProblems) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -195,6 +198,9 @@ private fun AllModeSummary(
                     InstanceCard(
                         summary = summary,
                         onClick = inst?.let { { onSelectInstance(it) } },
+                        onChipSelected = if (inst != null && onInstanceChipSelected != null) {
+                            { filter -> onInstanceChipSelected(inst, filter) }
+                        } else null,
                     )
                 }
             }
@@ -203,7 +209,11 @@ private fun AllModeSummary(
 }
 
 @Composable
-private fun InstanceCard(summary: InstanceSummary, onClick: (() -> Unit)?) {
+private fun InstanceCard(
+    summary: InstanceSummary,
+    onClick: (() -> Unit)?,
+    onChipSelected: ((QuickFilter) -> Unit)? = null,
+) {
     val chips = instanceSeverityChips(summary)
 
     Card(
@@ -222,16 +232,18 @@ private fun InstanceCard(summary: InstanceSummary, onClick: (() -> Unit)?) {
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(4.dp))
-            // Severity-specific chips stacked vertically
+            // Severity-specific chips stacked vertically; chips with a quickFilter are tappable.
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                chips.forEach { (bgColor, textColor, label) ->
+                chips.forEach { chip ->
+                    val chipClickable = chip.quickFilter != null && onChipSelected != null
                     Surface(
                         shape = RoundedCornerShape(4.dp),
-                        color = bgColor,
-                        contentColor = textColor,
+                        color = chip.bg,
+                        contentColor = chip.fg,
+                        modifier = if (chipClickable) Modifier.clickable { onChipSelected!!(chip.quickFilter!!) } else Modifier,
                     ) {
                         Text(
-                            label,
+                            chip.label,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
@@ -317,7 +329,7 @@ private fun SingleModeSummary(summary: InstanceSummary, modifier: Modifier = Mod
 
 // ── Severity chip model ───────────────────────────────────────────────────────
 
-private data class ChipSpec(val bg: Color, val fg: Color, val label: String)
+private data class ChipSpec(val bg: Color, val fg: Color, val label: String, val quickFilter: QuickFilter? = null)
 
 /**
  * Returns severity-specific chips for a summary.
@@ -333,19 +345,19 @@ private fun instanceSeverityChips(summary: InstanceSummary): List<ChipSpec> = wh
     else -> buildList {
         if (summary.hostDown > 0)
             add(ChipSpec(MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer,
-                "HOSTS DOWN ${summary.hostDown}"))
+                "HOSTS DOWN ${summary.hostDown}", QuickFilter.HOST_DOWN))
         if (summary.hostUnreachable > 0)
             add(ChipSpec(Color(0xFFFFF3E0), Color(0xFFE65100),
-                "UNREACHABLE ${summary.hostUnreachable}"))
+                "UNREACHABLE ${summary.hostUnreachable}", QuickFilter.HOST_UNREACHABLE))
         if (summary.serviceCritical > 0)
             add(ChipSpec(MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer,
-                "CRITICALS ${summary.serviceCritical}"))
+                "CRITICALS ${summary.serviceCritical}", QuickFilter.SERVICE_CRITICAL))
         if (summary.serviceWarning > 0)
             add(ChipSpec(Color(0xFFFFF3CD), Color(0xFF856404),
-                "WARNINGS ${summary.serviceWarning}"))
+                "WARNINGS ${summary.serviceWarning}", QuickFilter.SERVICE_WARNING))
         if (summary.serviceUnknown > 0)
             add(ChipSpec(Color(0xFFEDE7F6), Color(0xFF4A148C),
-                "UNKNOWN ${summary.serviceUnknown}"))
+                "UNKNOWN ${summary.serviceUnknown}", QuickFilter.SERVICE_UNKNOWN))
         if (isEmpty())
             add(ChipSpec(Color(0xFFE8F5E9), Color(0xFF2E7D32), "OK"))
     }

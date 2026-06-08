@@ -233,10 +233,12 @@ fun NotificationSettingsSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(4.dp))
+                // GROUPED_DETAILS is not yet implemented; map it to SUMMARY_ONLY for display.
+                val displayMode = if (settings.notificationMode == NotificationMode.GROUPED_DETAILS)
+                    NotificationMode.SUMMARY_ONLY else settings.notificationMode
                 listOf(
-                    NotificationMode.SUMMARY_ONLY  to "Compact summary (recommended)",
-                    NotificationMode.GROUPED_DETAILS to "Grouped details",
-                    NotificationMode.PER_PROBLEM   to "Per problem (noisy)",
+                    NotificationMode.SUMMARY_ONLY to "Compact summary (recommended)",
+                    NotificationMode.PER_PROBLEM  to "Per problem (noisy)",
                 ).forEach { (mode, label) ->
                     Row(
                         modifier = Modifier
@@ -246,7 +248,7 @@ fun NotificationSettingsSection(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         RadioButton(
-                            selected = settings.notificationMode == mode,
+                            selected = displayMode == mode,
                             onClick = { onUpdate(settings.copy(notificationMode = mode)) },
                         )
                         Text(label, style = MaterialTheme.typography.bodySmall)

@@ -26,6 +26,7 @@ import com.exogroup.qnag.data.CommandSettings
 import com.exogroup.qnag.data.NagiosInstance
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
+import com.exogroup.qnag.data.NagiosUrl
 import com.exogroup.qnag.viewmodel.CommandState
 import com.exogroup.qnag.viewmodel.NagiosViewModel
 import java.net.URLEncoder
@@ -377,16 +378,16 @@ private fun DetailRow(label: String, value: String) {
 
 /** Generate a Nagios extinfo.cgi URL for host or service details. */
 fun nagiosExtInfoUrl(baseUrl: String, problem: NagiosProblem): String {
-    val base = baseUrl.trimEnd('/')
+    val cgiBase = NagiosUrl.cgi(baseUrl, "extinfo.cgi")
     return when (problem) {
         is NagiosProblem.ServiceProblem -> {
             val host = URLEncoder.encode(problem.hostName, "UTF-8")
             val svc  = URLEncoder.encode(problem.serviceName, "UTF-8")
-            "$base/nagios/cgi-bin/extinfo.cgi?type=2&host=$host&service=$svc"
+            "$cgiBase?type=2&host=$host&service=$svc"
         }
         is NagiosProblem.HostProblem -> {
             val host = URLEncoder.encode(problem.hostName, "UTF-8")
-            "$base/nagios/cgi-bin/extinfo.cgi?type=1&host=$host"
+            "$cgiBase?type=1&host=$host"
         }
     }
 }

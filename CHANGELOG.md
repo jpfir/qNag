@@ -9,9 +9,56 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ---
 
-## [1.0.2] - unreleased
+## [1.0.2] - 2026-06-08
 
 ### Added
+
+**qNagstamon URL compatibility**
+- qNag now accepts all Nagios URL forms that qNagstamon exports: bare host root, `/nagios`,
+  `/nagios/cgi-bin`, and `/cgi-bin`. The configured URL is normalised to the CGI base at
+  request time by a central `NagiosUrl` helper.
+- Previously qNag always appended `/nagios/cgi-bin`, which produced invalid double-path URLs
+  (`/nagios/cgi-bin/nagios/cgi-bin/statusjson.cgi`) for instances imported from qNagstamon.
+- All CGI endpoints (statusjson, cmd.cgi, extinfo.cgi) use the same normalisation so behaviour
+  is consistent across fetch, acknowledge, recheck, unack, downtime, and external detail links.
+- Import/export URL values are stored and exported as-is; normalisation happens only at request
+  time, keeping files round-trip compatible with both tools.
+
+**Instance import / export**
+- Import and export Nagios instance configurations from Settings → Instances.
+- File format is the [qNagstamon](https://github.com/jfir/qNagstamon) v1 interchange format
+  (`type = "qnagstamon.instances"`, `version = 1`) — files produced by either app can be
+  read by the other.
+- **Import**: pick a JSON file via the system file picker; a preview dialog shows how many
+  instances will be added vs. updated before anything is saved. Existing instances are matched
+  by normalised URL + username — unmatched instances are never deleted.
+- **Export**: choose which instances to export; passwords are excluded by default and require
+  explicit opt-in (a plaintext-warning banner is shown when enabled).
+- Password security: passwords are never exported unless the user explicitly enables the
+  include-passwords toggle; imported files without passwords preserve existing stored passwords;
+  passwords are never written to Logcat, Toast, Snackbar, or exception messages.
+
+**Dashboard instance chip filtering**
+- Tapping a severity chip on a per-instance card in ALL mode now filters the alert list to
+  that instance and that state (e.g. tap "CRITICALS 3" on prod-nagios to see only critical
+  alerts from that instance).
+- The quick-filter banner shows the instance name and state: "Showing: prod-nagios · Critical services".
+- Tapping a global summary badge (D/U/C/W/N in the ALL header) still filters across all
+  instances and clears any instance scope.
+- Clearing the banner clears both filters.
+
+**Notification mode settings**
+- "Grouped details" mode is hidden from the notification display mode picker until it is
+  implemented. Existing saved settings of GROUPED_DETAILS are transparently mapped to
+  "Compact summary" on display; no data migration required.
+
+**Empty-state / startup UX**
+- When every configured instance is disabled, the Add Instance screen now shows a
+  "Re-enable configured instance" button in addition to the normal Add form.
+- Tapping it opens a picker listing all disabled instances by name and URL.
+- Selecting one re-enables it (preserving all credentials and `notificationsEnabled`
+  state), recalculates polling/Reliability-Mode scheduling, and opens its Dashboard.
+- No change to the Add-new-instance flow or the Cancel button behaviour.
 
 **Tier 2+ notification delay**
 - Tier 2+ mode delays Android alerting and sound until an alert has remained active for a

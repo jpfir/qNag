@@ -34,6 +34,8 @@ import com.exogroup.qnag.data.NagiosInstance
 fun InstanceSettingsSection(
     instances: List<NagiosInstance>,
     onUpdate: (List<NagiosInstance>) -> Unit,
+    onImportInstances: (() -> Unit)? = null,
+    onExportInstances: (() -> Unit)? = null,
 ) {
     var instanceToDelete by remember { mutableStateOf<NagiosInstance?>(null) }
     var instanceToEdit by remember { mutableStateOf<NagiosInstance?>(null) }
@@ -60,6 +62,25 @@ fun InstanceSettingsSection(
                     onDeleteRequest = { instanceToDelete = instance },
                 )
             }
+        }
+    }
+
+    if (onImportInstances != null || onExportInstances != null) {
+        Spacer(Modifier.height(12.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = { onImportInstances?.invoke() },
+                enabled = onImportInstances != null,
+                modifier = Modifier.weight(1f),
+            ) { Text("Import") }
+            OutlinedButton(
+                onClick = { onExportInstances?.invoke() },
+                enabled = onExportInstances != null,
+                modifier = Modifier.weight(1f),
+            ) { Text("Export") }
         }
     }
 

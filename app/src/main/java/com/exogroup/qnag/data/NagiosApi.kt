@@ -22,7 +22,7 @@ class NagiosApi {
     // ── Fetch ─────────────────────────────────────────────────────────────────
 
     fun fetchProblems(instance: NagiosInstance): List<NagiosProblem> {
-        val baseUrl = instance.url.trimEnd('/')
+        val baseUrl = instance.url
         val credential = Credentials.basic(instance.username, instance.password)
 
         // Tag each problem with its source instance so the dashboard and notifications
@@ -37,7 +37,7 @@ class NagiosApi {
     }
 
     private fun fetchServiceProblems(baseUrl: String, credential: String): List<NagiosProblem.ServiceProblem> {
-        val url = "$baseUrl/nagios/cgi-bin/statusjson.cgi".toHttpUrl().newBuilder()
+        val url = NagiosUrl.cgi(baseUrl, "statusjson.cgi").toHttpUrl().newBuilder()
             .addEncodedQueryParameter("query", "servicelist")
             .addEncodedQueryParameter("details", "true")
             .addEncodedQueryParameter("servicestatus", "warning+critical+unknown")
@@ -98,7 +98,7 @@ class NagiosApi {
     }
 
     private fun fetchHostProblems(baseUrl: String, credential: String): List<NagiosProblem.HostProblem> {
-        val url = "$baseUrl/nagios/cgi-bin/statusjson.cgi".toHttpUrl().newBuilder()
+        val url = NagiosUrl.cgi(baseUrl, "statusjson.cgi").toHttpUrl().newBuilder()
             .addEncodedQueryParameter("query", "hostlist")
             .addEncodedQueryParameter("details", "true")
             .addEncodedQueryParameter("hoststatus", "down+unreachable")
@@ -170,7 +170,6 @@ class NagiosApi {
         problem: NagiosProblem,
         settings: CommandSettings,
     ) {
-        val baseUrl = instance.url.trimEnd('/')
         val credential = Credentials.basic(instance.username, instance.password)
         val cmdType = if (problem is NagiosProblem.HostProblem) "33" else "34"
 
@@ -188,11 +187,10 @@ class NagiosApi {
             }
             .build()
 
-        executeCommandWithCsrf("$baseUrl/nagios/cgi-bin/cmd.cgi", credential, body, "ACK", settings)
+        executeCommandWithCsrf(NagiosUrl.cgi(instance.url, "cmd.cgi"), credential, body, "ACK", settings)
     }
 
     fun recheckProblem(instance: NagiosInstance, problem: NagiosProblem, settings: CommandSettings) {
-        val baseUrl = instance.url.trimEnd('/')
         val credential = Credentials.basic(instance.username, instance.password)
 
         // Use cmd_typ=7 (CMD_SCHEDULE_SVC_CHECK) for services and cmd_typ=96
@@ -219,7 +217,7 @@ class NagiosApi {
             }
             .build()
 
-        executeCommandWithCsrf("$baseUrl/nagios/cgi-bin/cmd.cgi", credential, body, "recheck", settings)
+        executeCommandWithCsrf(NagiosUrl.cgi(instance.url, "cmd.cgi"), credential, body, "recheck", settings)
     }
 
     fun acknowledgeProblems(
@@ -241,7 +239,6 @@ class NagiosApi {
         problem: NagiosProblem,
         settings: CommandSettings,
     ) {
-        val baseUrl = instance.url.trimEnd('/')
         val credential = Credentials.basic(instance.username, instance.password)
         val cmdType = if (problem is NagiosProblem.HostProblem) "51" else "52"
 
@@ -254,7 +251,7 @@ class NagiosApi {
             }
             .build()
 
-        executeCommandWithCsrf("$baseUrl/nagios/cgi-bin/cmd.cgi", credential, body, "unack", settings)
+        executeCommandWithCsrf(NagiosUrl.cgi(instance.url, "cmd.cgi"), credential, body, "unack", settings)
     }
 
     fun unacknowledgeProblems(
@@ -274,7 +271,6 @@ class NagiosApi {
         comment: String,
         settings: CommandSettings,
     ) {
-        val baseUrl = instance.url.trimEnd('/')
         val credential = Credentials.basic(instance.username, instance.password)
         val cmdType = when (scope) {
             DowntimeScope.HOST_ONLY -> "55"
@@ -308,7 +304,7 @@ class NagiosApi {
             }
             .build()
 
-        executeCommandWithCsrf("$baseUrl/nagios/cgi-bin/cmd.cgi", credential, body, "downtime", settings)
+        executeCommandWithCsrf(NagiosUrl.cgi(instance.url, "cmd.cgi"), credential, body, "downtime", settings)
     }
 
     // ── CSRF-aware command execution ──────────────────────────────────────────

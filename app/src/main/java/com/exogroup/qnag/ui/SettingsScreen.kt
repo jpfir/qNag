@@ -130,6 +130,8 @@ fun SettingsScreen(
     onUpdateNotificationSettings: (NotificationSettings) -> Unit,
     onUpdateCommandSettings: (CommandSettings) -> Unit,
     onBack: () -> Unit,
+    onImportInstances: (() -> Unit)? = null,
+    onExportInstances: (() -> Unit)? = null,
 ) {
     var nav by rememberSaveable { mutableStateOf(NAV_HOME) }
 
@@ -144,7 +146,12 @@ fun SettingsScreen(
             onBack = onBack,
         )
         NAV_INSTANCES -> SettingsSubScreen("Instances", onBack = { nav = NAV_HOME }) {
-            InstanceSettingsSection(instances = instances, onUpdate = onUpdateInstances)
+            InstanceSettingsSection(
+                instances = instances,
+                onUpdate = onUpdateInstances,
+                onImportInstances = onImportInstances,
+                onExportInstances = onExportInstances,
+            )
         }
         NAV_MONITORING -> SettingsSubScreen("Monitoring & Reliability", onBack = { nav = NAV_HOME }) {
             MonitoringReliabilityPage(

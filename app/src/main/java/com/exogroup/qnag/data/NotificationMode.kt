@@ -13,6 +13,7 @@ package com.exogroup.qnag.data
  * GROUPED_DETAILS:
  *   Like SUMMARY_ONLY but intends to add grouped child notifications per state.
  *   Currently falls back to SUMMARY_ONLY behaviour (TODO).
+ *   Hidden from the settings UI until implemented; mapped to SUMMARY_ONLY on read.
  *
  * PER_PROBLEM:
  *   Legacy / noisy mode.  One Android notification per problem, per state channel.

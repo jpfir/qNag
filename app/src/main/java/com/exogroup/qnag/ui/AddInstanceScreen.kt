@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -14,12 +15,20 @@ import com.exogroup.qnag.data.NagiosInstance
 fun AddInstanceScreen(
     onSave: (NagiosInstance) -> Unit,
     onCancel: (() -> Unit)? = null,
+    /** All instances known to the app (enabled and disabled). Used to offer re-enable. */
+    configuredInstances: List<NagiosInstance> = emptyList(),
+    /** Called with the chosen instance when the user picks one to re-enable. Null = hide button. */
+    onEnableConfiguredInstance: ((NagiosInstance) -> Unit)? = null,
 ) {
     var name by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("https://") }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var validationError by remember { mutableStateOf<String?>(null) }
+    var showReEnableDialog by remember { mutableStateOf(false) }
+
+    val disabledInstances = configuredInstances.filter { !it.enabled }
+    val showReEnableButton = disabledInstances.isNotEmpty() && onEnableConfiguredInstance != null
 
     Column(
         modifier = Modifier
@@ -101,6 +110,59 @@ fun AddInstanceScreen(
                 Text("Cancel")
             }
         }
+
+        if (showReEnableButton) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { showReEnableDialog = true },
+            ) {
+                Text("Re-enable configured instance")
+            }
+        }
+    }
+
+    if (showReEnableDialog) {
+        AlertDialog(
+            onDismissRequest = { showReEnableDialog = false },
+            title = { Text("Re-enable instance") },
+            text = {
+                Column {
+                    Text(
+                        "Select an existing instance to re-enable:",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    disabledInstances.forEach { inst ->
+                        TextButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                onEnableConfiguredInstance?.invoke(inst)
+                                showReEnableDialog = false
+                            },
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.Start,
+                            ) {
+                                Text(inst.name, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    inst.url,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showReEnableDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
 }
 

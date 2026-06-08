@@ -60,6 +60,15 @@ internal enum class QuickFilter {
     }
 }
 
+private fun applyInstanceAndQuickFilter(
+    problems: List<NagiosProblem>,
+    filter: QuickFilter?,
+    instanceFilter: NagiosInstance?,
+): List<NagiosProblem> {
+    val byInstance = if (instanceFilter != null) problems.filter { it.instanceId == instanceFilter.id } else problems
+    return applyQuickFilter(byInstance, filter)
+}
+
 private fun applyQuickFilter(problems: List<NagiosProblem>, filter: QuickFilter?): List<NagiosProblem> {
     if (filter == null) return problems
     return problems.filter { p -> when (filter) {
@@ -171,8 +180,9 @@ fun DashboardScreen(
         }
     }
 
-    var selectedIds  by remember { mutableStateOf(setOf<String>()) }
-    var quickFilter  by remember { mutableStateOf<QuickFilter?>(null) }
+    var selectedIds    by remember { mutableStateOf(setOf<String>()) }
+    var quickFilter    by remember { mutableStateOf<QuickFilter?>(null) }
+    var instanceFilter by remember { mutableStateOf<NagiosInstance?>(null) }
     val isSelectionMode = selectedIds.isNotEmpty()
     val showInstanceNames = selectedInstance is InstanceSelection.All
 
@@ -224,7 +234,7 @@ fun DashboardScreen(
         }
     }
 
-    LaunchedEffect(selectedInstance) { selectedIds = emptySet(); quickFilter = null }
+    LaunchedEffect(selectedInstance) { selectedIds = emptySet(); quickFilter = null; instanceFilter = null }
     LaunchedEffect(visibleProblems) {
         val visibleKeys = visibleProblems.map { problemKey(it) }.toSet()
         val updated = selectedIds.intersect(visibleKeys)
@@ -526,7 +536,9 @@ fun DashboardScreen(
                 onSummaryExpandedChanged(expanded)
             },
             quickFilter = quickFilter,
-            onQuickFilterChanged = { quickFilter = it },
+            onQuickFilterChanged = { filter -> quickFilter = filter; instanceFilter = null },
+            instanceFilter = instanceFilter,
+            onInstanceChipSelected = { inst, filter -> instanceFilter = inst; quickFilter = filter },
             tier2PlusActive = notificationSettings.tier2PlusEnabled && notificationSettings.notificationsEnabled,
             tier2PlusLabel = if (notificationSettings.tier2PlusUsePerStateDelays) "per-state delays"
                              else "notify after ${notificationSettings.tier2PlusDelayMinutes}m",
@@ -569,6 +581,8 @@ private fun DashboardContent(
     onSummaryExpandedChanged: (Boolean) -> Unit = {},
     quickFilter: QuickFilter? = null,
     onQuickFilterChanged: (QuickFilter?) -> Unit = {},
+    instanceFilter: NagiosInstance? = null,
+    onInstanceChipSelected: ((NagiosInstance, QuickFilter) -> Unit)? = null,
     tier2PlusActive: Boolean = false,
     tier2PlusLabel: String = "",
     isTier2Waiting: (NagiosProblem) -> Boolean = { false },
@@ -594,10 +608,15 @@ private fun DashboardContent(
                 onExpandedChanged = onSummaryExpandedChanged,
                 quickFilter = quickFilter,
                 onQuickFilterChanged = onQuickFilterChanged,
+                onInstanceChipSelected = onInstanceChipSelected,
             )
             Spacer(Modifier.height(4.dp))
             if (quickFilter != null) {
-                QuickFilterBanner(filter = quickFilter, onClear = { onQuickFilterChanged(null) })
+                QuickFilterBanner(
+                    filter = quickFilter,
+                    instanceName = instanceFilter?.name,
+                    onClear = { onQuickFilterChanged(null) },
+                )
             }
             if (tier2PlusActive) {
                 Tier2PlusBanner(label = tier2PlusLabel)
@@ -610,7 +629,7 @@ private fun DashboardContent(
                 if (!stale.isNullOrEmpty()) {
                     Spacer(Modifier.height(4.dp))
                     val base = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
-                    val visible = applyQuickFilter(base, quickFilter)
+                    val visible = applyInstanceAndQuickFilter(base, quickFilter, instanceFilter)
                     ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         isRecheckPending = isRecheckPending,
@@ -629,7 +648,7 @@ private fun DashboardContent(
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(4.dp))
                     val base = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
-                    val visible = applyQuickFilter(base, quickFilter)
+                    val visible = applyInstanceAndQuickFilter(base, quickFilter, instanceFilter)
                     ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         isRecheckPending = isRecheckPending,
@@ -653,7 +672,7 @@ private fun DashboardContent(
                     Spacer(Modifier.height(4.dp))
                 }
                 val base = applyFiltersAndLocalAck(state.problems, filterSettings, isLocallyAcknowledged)
-                val visible = applyQuickFilter(base, quickFilter)
+                val visible = applyInstanceAndQuickFilter(base, quickFilter, instanceFilter)
                 when {
                     state.problems.isEmpty() && state.partialErrors.isEmpty() ->
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -865,13 +884,14 @@ private fun Tier2PlusBanner(label: String) {
 // ── Quick filter banner ───────────────────────────────────────────────────────
 
 @Composable
-private fun QuickFilterBanner(filter: QuickFilter, onClear: () -> Unit) {
+private fun QuickFilterBanner(filter: QuickFilter, instanceName: String? = null, onClear: () -> Unit) {
+    val label = if (instanceName != null) "$instanceName · ${filter.displayLabel}" else filter.displayLabel
     Row(
         modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            "Showing: ${filter.displayLabel}",
+            "Showing: $label",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.weight(1f),
