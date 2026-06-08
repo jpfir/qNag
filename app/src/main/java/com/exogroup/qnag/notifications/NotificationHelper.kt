@@ -329,7 +329,10 @@ object NotificationHelper {
             .setContentText(bodyLines.firstOrNull() ?: "")
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setContentIntent(mainActivityIntent(context))
-            .setOnlyAlertOnce(!channelSoundAllowed)   // true (silent) in in-app mode
+            .setOnlyAlertOnce(!channelSoundAllowed)
+            // In in-app sound modes, suppress channel sound/vibration explicitly.
+            // setOnlyAlertOnce only silences repeat updates; setSilent covers first-post too.
+            .apply { if (isInAppMode) setSilent(true) }
             .setPriority(priority)
             .setAutoCancel(false)
             .build()

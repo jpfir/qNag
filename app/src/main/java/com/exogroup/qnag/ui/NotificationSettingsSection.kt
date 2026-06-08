@@ -76,7 +76,7 @@ fun NotificationSettingsSection(
     // Derive human-readable name for the current in-app sound
     val currentSoundLabel = remember(settings.inAppSoundUri) {
         if (settings.inAppSoundUri == null) {
-            "Default alarm"
+            "qNag default alert"
         } else {
             try {
                 RingtoneManager.getRingtone(context, Uri.parse(settings.inAppSoundUri))
@@ -123,7 +123,8 @@ fun NotificationSettingsSection(
                 Spacer(Modifier.height(4.dp))
                 NotifSubheader("qNag alert sound")
                 Text(
-                    "In Reliability Mode, qNag plays alert sounds using its own in-app engine. " +
+                    "qNag uses a bundled short alert sound by default and stops it automatically. " +
+                    "You can choose another sound, but qNag will stop it after the configured duration. " +
                     "This works independently of Android channel settings, which can be muted or disabled.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -181,6 +182,24 @@ fun NotificationSettingsSection(
                                 ringtoneLauncher.launch(intent)
                             }) { Text("Choose sound") }
                         }
+
+                        var maxDurationText by remember(settings.maxAlertSoundSeconds) {
+                            mutableStateOf(settings.maxAlertSoundSeconds.toString())
+                        }
+                        OutlinedTextField(
+                            value = maxDurationText,
+                            onValueChange = { raw ->
+                                maxDurationText = raw
+                                raw.toIntOrNull()?.coerceIn(1, 60)?.let {
+                                    onUpdate(settings.copy(maxAlertSoundSeconds = it))
+                                }
+                            },
+                            label = { Text("Alert sound duration (seconds)") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            supportingText = { Text("qNag stops alert sounds automatically after this duration. Range: 1–60.") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
 
                         NotifRow("Sound in vibrate mode (alarm stream)", settings.playSoundInVibrateMode) {
                             onUpdate(settings.copy(playSoundInVibrateMode = it))

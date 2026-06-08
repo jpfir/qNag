@@ -162,6 +162,7 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 tier2ServiceUnknownDelayMinutes = o.get("tier2ServiceUnknownDelayMinutes")?.asInt ?: 10,
                 notifyAckedAfterEnabled = o.get("notifyAckedAfterEnabled")?.asBoolean ?: false,
                 notifyAckedAfterMinutes = o.get("notifyAckedAfterMinutes")?.asInt ?: 120,
+                maxAlertSoundSeconds = o.get("maxAlertSoundSeconds")?.asInt ?: 10,
             )
         } catch (_: Exception) { NotificationSettings() }
     }

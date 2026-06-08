@@ -31,6 +31,24 @@ SPDX-License-Identifier: GPL-3.0-or-later
   Settings → Monitoring Health for ongoing reliability verification.
 - Existing users who have already configured instances are never shown the Reliability Checklist.
 
+**Alert sound defaults and auto-stop**
+- qNag now uses a short bundled alert sound (`R.raw.qnag_alert`) by default instead of the
+  system default alarm tone — prevents long or looping alarm tones from ringing indefinitely
+  on fresh installs.
+- Alert sounds now always stop automatically. New `maxAlertSoundSeconds` setting (default 10,
+  range 1–60) caps all playback regardless of sound type — bundled, custom, or system fallback.
+- New sound selection priority: (1) user-selected custom URI, (2) embedded qNag default sound,
+  (3) system default alarm, (4) system default ringtone.  If the custom URI fails, qNag falls
+  back to the embedded default rather than the system alarm.
+- Custom URI playback now uses `MediaPlayer` for the embedded sound and enforces the same
+  max-duration cap; looping alarm tones can no longer ring beyond the cap.
+- In-app sound mode now calls `setSilent(true)` on the summary notification so the
+  notification channel cannot produce a duplicate sound or vibration on the first post —
+  previously only `setOnlyAlertOnce` was set, which did not cover fresh notification posts.
+- Settings UI: "Alert sound duration (seconds)" field added under the sound picker.
+- Settings UI: label for the default sound (no custom URI set) changed from "Default alarm"
+  to "qNag default alert".
+
 **Default reliability settings**
 - `notificationsEnabled` now defaults to `true` (was `false`) — new installs enable Android alerts
   automatically; no manual toggle required before the first alert fires.

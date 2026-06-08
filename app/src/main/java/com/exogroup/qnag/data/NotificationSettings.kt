@@ -67,4 +67,10 @@ data class NotificationSettings(
     // has remained active for too long — indicating the ACK may be stale.
     val notifyAckedAfterEnabled: Boolean = false,
     val notifyAckedAfterMinutes: Int = 120,
+
+    // ── Alert sound duration cap ──────────────────────────────────────────────
+    // qNag stops alert sounds automatically after this many seconds.
+    // Prevents looping/long alarm tones from ringing indefinitely.
+    // Clamped to 1..60 at play time; stored as-is.
+    val maxAlertSoundSeconds: Int = 10,
 )

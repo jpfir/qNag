@@ -91,6 +91,44 @@ class AppSettingsDefaultsTest {
         assertTrue(parsed)
     }
 
+    // ── maxAlertSoundSeconds ──────────────────────────────────────────────────
+
+    @Test fun `maxAlertSoundSeconds defaults to 10`() {
+        assertEquals(10, NotificationSettings().maxAlertSoundSeconds)
+    }
+
+    @Test fun `maxAlertSoundSeconds JSON fallback is 10 when key absent`() {
+        val o = JsonParser.parseString("{}").asJsonObject
+        val parsed = o.get("maxAlertSoundSeconds")?.asInt ?: 10
+        assertEquals(10, parsed)
+    }
+
+    @Test fun `maxAlertSoundSeconds JSON respects stored value`() {
+        val o = JsonParser.parseString("""{"maxAlertSoundSeconds":30}""").asJsonObject
+        val parsed = o.get("maxAlertSoundSeconds")?.asInt ?: 10
+        assertEquals(30, parsed)
+    }
+
+    @Test fun `maxAlertSoundSeconds data-class default matches JSON absent-key fallback`() {
+        val dataClassDefault = NotificationSettings().maxAlertSoundSeconds
+        val jsonFallback = JsonParser.parseString("{}").asJsonObject
+            .get("maxAlertSoundSeconds")?.asInt ?: 10
+        assertEquals(dataClassDefault, jsonFallback)
+    }
+
+    // ── AlertSoundPlayer.stop() safety ────────────────────────────────────────
+
+    @Test fun `AlertSoundPlayer stop does not crash when nothing is playing`() {
+        // stop() must be a no-op when no sound has ever been started
+        com.exogroup.qnag.sound.AlertSoundPlayer.stop()
+        com.exogroup.qnag.sound.AlertSoundPlayer.stop()  // idempotent
+    }
+
+    @Test fun `AlertSoundPlayer isPlaying returns false when nothing is playing`() {
+        com.exogroup.qnag.sound.AlertSoundPlayer.stop()
+        assertFalse(com.exogroup.qnag.sound.AlertSoundPlayer.isPlaying())
+    }
+
     // ── Consistency check ─────────────────────────────────────────────────────
     // The data-class default and the JSON absent-key fallback must agree so that
     // new installs and upgrades from pre-key versions both get the same value.
