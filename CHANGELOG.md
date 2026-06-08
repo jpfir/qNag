@@ -9,6 +9,23 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ---
 
+## [1.0.3] - unreleased
+
+### Added
+
+**Welcome screen**
+- First-run experience: when the app starts with no configured instances it shows a Welcome
+  screen instead of jumping straight into the Add Instance form.
+- The Welcome screen shows the app name, a one-line description, a brief feature summary,
+  the current version number, and two buttons — "Add Nagios instance" and "Import configuration".
+- "Import configuration" on the Welcome screen reuses the existing import flow (SAF file
+  picker → preview dialog → merge) so new users can restore a qNagstamon export in one step.
+- After a successful add or import the app navigates directly to the Dashboard — no extra
+  confirmation step required.
+- Existing users with configured instances (enabled or disabled) never see the Welcome screen.
+
+---
+
 ## [1.0.2] - 2026-06-08
 
 ### Added

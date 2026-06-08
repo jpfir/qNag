@@ -38,6 +38,7 @@ import com.exogroup.qnag.ui.ExportInstancesDialog
 import com.exogroup.qnag.ui.ImportPreviewDialog
 import com.exogroup.qnag.ui.ProblemDetailScreen
 import com.exogroup.qnag.ui.SettingsScreen
+import com.exogroup.qnag.ui.WelcomeScreen
 import com.exogroup.qnag.worker.BackgroundPollingScheduler
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -45,6 +46,7 @@ import java.util.Locale
 import java.util.TimeZone
 
 private sealed class AppScreen {
+    object Welcome : AppScreen()
     object AddInstance : AppScreen()
     data class Dashboard(val instance: NagiosInstance) : AppScreen()
     data class Settings(val fromInstance: NagiosInstance) : AppScreen()
@@ -219,11 +221,22 @@ class MainActivity : ComponentActivity() {
                     }
 
                     var screen by remember {
-                        val firstEnabled = instances.firstOrNull { it.enabled }
                         mutableStateOf<AppScreen>(
-                            if (firstEnabled != null) AppScreen.Dashboard(firstEnabled)
-                            else AppScreen.AddInstance
+                            when {
+                                instances.isEmpty() -> AppScreen.Welcome
+                                instances.any { it.enabled } -> AppScreen.Dashboard(instances.first { it.enabled })
+                                else -> AppScreen.AddInstance
+                            }
                         )
+                    }
+
+                    // After an import on the Welcome screen, instances becomes non-empty — navigate away.
+                    LaunchedEffect(instances, screen) {
+                        if (screen is AppScreen.Welcome && instances.isNotEmpty()) {
+                            val firstEnabled = instances.firstOrNull { it.enabled }
+                            screen = if (firstEnabled != null) AppScreen.Dashboard(firstEnabled)
+                                     else AppScreen.AddInstance
+                        }
                     }
 
                     // Helper: update instance list and apply the appropriate polling mode
@@ -234,6 +247,7 @@ class MainActivity : ComponentActivity() {
                         val enabled = newInstances.filter { it.enabled }
                         val current = screen
                         when {
+                            newInstances.isEmpty() -> screen = AppScreen.Welcome
                             enabled.isEmpty() -> screen = AppScreen.AddInstance
                             current is AppScreen.Dashboard && enabled.none { it.id == current.instance.id } ->
                                 screen = AppScreen.Dashboard(enabled.first())
@@ -244,6 +258,16 @@ class MainActivity : ComponentActivity() {
                     }
 
                     when (val s = screen) {
+
+                        is AppScreen.Welcome -> {
+                            WelcomeScreen(
+                                versionName = BuildConfig.VERSION_NAME,
+                                onAddInstance = { screen = AppScreen.AddInstance },
+                                onImportConfiguration = {
+                                    importLauncher.launch(arrayOf("application/json", "*/*"))
+                                },
+                            )
+                        }
 
                         is AppScreen.AddInstance -> {
                             AddInstanceScreen(
