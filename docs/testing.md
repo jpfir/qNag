@@ -16,6 +16,7 @@ Run with `./gradlew test` (no device required, runs in CI on every PR).
 | `QNagSmokeTest` | End-to-end: critical service allowed, warning service suppressed by default |
 | `InstanceImportExportTest` | Import: parse valid qNagstamon JSON, reject wrong type/version, merge by URL+username, preserve passwords when not included, url trailing-slash normalisation; Export: type/version, passwords included/excluded, user field mapping, `desktop_notifications` ↔ `notificationsEnabled`, `enabled`, refresh interval derivation, filter fields; round-trip re-import without passwords preserves stored passwords |
 | `NagiosUrlTest` | `cgiBase`: root/trailing-slash, /nagios, /nagios/, /nagios/cgi-bin, /nagios/cgi-bin/, /cgi-bin, /cgi-bin/, full script path normalised to cgi-bin, query/fragment stripped, http scheme, non-standard port; `cgi`: script appended correctly for root/cgi-bin/nagios inputs, leading slash in script name; no duplicate /nagios/cgi-bin |
+| `AppSettingsDefaultsTest` | `NotificationSettings()` and `CommandSettings()` data-class defaults for reliability-critical booleans; JSON absent-key fallback values match data-class defaults; JSON explicit `false` survives parsing unchanged (backward compat for users who opted out) |
 
 The automated tests cover pure/business logic that does not require an Android device.
 They will **fail** if Tier 2+ delay logic, ACK re-notification, fingerprint separators,

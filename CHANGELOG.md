@@ -13,6 +13,34 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ### Added
 
+**Reliability Checklist**
+- After the first Nagios instance is added or imported, a Reliability Checklist screen is
+  shown before the Dashboard so users can verify monitoring will work reliably on their device.
+- Six checklist rows with colored status icons (OK / WARNING / ERROR):
+  1. Notification permission — prompts for Android 13+ POST_NOTIFICATIONS if not granted.
+  2. Battery optimization — detects whether qNag is exempt; provides a direct link to remove the restriction.
+  3. Exact Alarm Watchdog permission — detects Android 12+ SCHEDULE_EXACT_ALARM; links to system settings.
+  4. Reliability Mode — shows whether the foreground-service polling is enabled.
+  5. Android alerts — shows whether qNag's notification toggle is enabled.
+  6. Alert notification channel — shows whether the summary channel is configured and not muted.
+- Status icons and system-level permission states refresh every 2 seconds while the checklist
+  is visible so changes made in system settings are reflected immediately on return.
+- "Start monitoring" button navigates to the Dashboard; all issues are informational — the
+  user is never blocked from proceeding.
+- Explanatory card describes Android power management limitations and directs users to
+  Settings → Monitoring Health for ongoing reliability verification.
+- Existing users who have already configured instances are never shown the Reliability Checklist.
+
+**Default reliability settings**
+- `notificationsEnabled` now defaults to `true` (was `false`) — new installs enable Android alerts
+  automatically; no manual toggle required before the first alert fires.
+- `keepMonitoringActive` (Reliability Mode) now defaults to `true` (was `false`) — new installs
+  use foreground-service polling from the first launch.
+- Startup notification permission prompt is now guarded — the system prompt is no longer shown
+  before any instance is configured, preventing a confusing permission dialog on fresh install.
+- `SecureInstanceStore` JSON parsing fallbacks for both fields updated to `true` to match the
+  new defaults; users who explicitly stored `false` are unaffected (the stored value is preserved).
+
 **Welcome screen**
 - First-run experience: when the app starts with no configured instances it shows a Welcome
   screen instead of jumping straight into the Add Instance form.
@@ -20,8 +48,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
   the current version number, and two buttons — "Add Nagios instance" and "Import configuration".
 - "Import configuration" on the Welcome screen reuses the existing import flow (SAF file
   picker → preview dialog → merge) so new users can restore a qNagstamon export in one step.
-- After a successful add or import the app navigates directly to the Dashboard — no extra
-  confirmation step required.
+- After a successful add or import the app navigates to the Reliability Checklist before the
+  Dashboard.
 - Existing users with configured instances (enabled or disabled) never see the Welcome screen.
 
 ---

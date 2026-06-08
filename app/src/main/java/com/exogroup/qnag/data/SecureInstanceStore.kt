@@ -106,7 +106,7 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 notifyOnFetchFailure = o.get("notifyOnFetchFailure")?.asBoolean ?: true,
                 notifyOnlyNewProblems = o.get("notifyOnlyNewProblems")?.asBoolean ?: true,
                 showBatteryOptimizationHint = o.get("showBatteryOptimizationHint")?.asBoolean ?: true,
-                keepMonitoringActive = o.get("keepMonitoringActive")?.asBoolean ?: false,
+                keepMonitoringActive = o.get("keepMonitoringActive")?.asBoolean ?: true,
                 foregroundPollingIntervalSeconds = o.get("foregroundPollingIntervalSeconds")?.asInt ?: 60,
                 nagiosDateFormat = try {
                     o.get("nagiosDateFormat")?.takeIf { !it.isJsonNull }?.asString
@@ -127,7 +127,7 @@ class SecureInstanceStore(context: Context) : InstanceStore {
         return try {
             val o = el.asJsonObject
             NotificationSettings(
-                notificationsEnabled = o.get("notificationsEnabled")?.asBoolean ?: false,
+                notificationsEnabled = o.get("notificationsEnabled")?.asBoolean ?: true,
                 notifyOnCriticalServices = o.get("notifyOnCriticalServices")?.asBoolean ?: true,
                 notifyOnWarningServices = o.get("notifyOnWarningServices")?.asBoolean ?: false,
                 notifyOnUnknownServices = o.get("notifyOnUnknownServices")?.asBoolean ?: true,

@@ -37,6 +37,7 @@ import com.exogroup.qnag.ui.DashboardScreen
 import com.exogroup.qnag.ui.ExportInstancesDialog
 import com.exogroup.qnag.ui.ImportPreviewDialog
 import com.exogroup.qnag.ui.ProblemDetailScreen
+import com.exogroup.qnag.ui.ReliabilityChecklistScreen
 import com.exogroup.qnag.ui.SettingsScreen
 import com.exogroup.qnag.ui.WelcomeScreen
 import com.exogroup.qnag.worker.BackgroundPollingScheduler
@@ -48,6 +49,7 @@ import java.util.TimeZone
 private sealed class AppScreen {
     object Welcome : AppScreen()
     object AddInstance : AppScreen()
+    data class ReliabilityChecklist(val dashboardInstance: NagiosInstance) : AppScreen()
     data class Dashboard(val instance: NagiosInstance) : AppScreen()
     data class Settings(val fromInstance: NagiosInstance) : AppScreen()
     data class ProblemDetail(
@@ -217,7 +219,11 @@ class MainActivity : ComponentActivity() {
                     // ── Startup scheduling ─────────────────────────────────
                     LaunchedEffect(Unit) {
                         applyPollingMode(appSettings, instances)
-                        maybeRequestNotificationPermission(appSettings.notificationSettings.notificationsEnabled)
+                        // Guard: don't prompt for notification permission before any instance
+                        // is configured — the Reliability Checklist handles first-run prompting.
+                        if (instances.isNotEmpty()) {
+                            maybeRequestNotificationPermission(appSettings.notificationSettings.notificationsEnabled)
+                        }
                     }
 
                     var screen by remember {
@@ -230,11 +236,11 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // After an import on the Welcome screen, instances becomes non-empty — navigate away.
+                    // After an import on the Welcome screen, instances becomes non-empty — show checklist.
                     LaunchedEffect(instances, screen) {
                         if (screen is AppScreen.Welcome && instances.isNotEmpty()) {
                             val firstEnabled = instances.firstOrNull { it.enabled }
-                            screen = if (firstEnabled != null) AppScreen.Dashboard(firstEnabled)
+                            screen = if (firstEnabled != null) AppScreen.ReliabilityChecklist(firstEnabled)
                                      else AppScreen.AddInstance
                         }
                     }
@@ -272,10 +278,12 @@ class MainActivity : ComponentActivity() {
                         is AppScreen.AddInstance -> {
                             AddInstanceScreen(
                                 onSave = { newInstance ->
+                                    val wasFirstInstance = instances.isEmpty()
                                     store.addInstance(newInstance)
                                     instances = store.getInstances()
                                     applyPollingMode(appSettings, instances)
-                                    screen = AppScreen.Dashboard(newInstance)
+                                    screen = if (wasFirstInstance) AppScreen.ReliabilityChecklist(newInstance)
+                                             else AppScreen.Dashboard(newInstance)
                                 },
                                 onCancel = if (instances.any { it.enabled }) {
                                     { screen = AppScreen.Dashboard(instances.first { it.enabled }) }
@@ -296,6 +304,20 @@ class MainActivity : ComponentActivity() {
                                         screen = AppScreen.Dashboard(updated.first { it.id == selected.id })
                                     }
                                 } else null,
+                            )
+                        }
+
+                        is AppScreen.ReliabilityChecklist -> {
+                            ReliabilityChecklistScreen(
+                                notificationSettings = appSettings.notificationSettings,
+                                commandSettings = appSettings.commandSettings,
+                                notificationPermissionGranted = notifPermGranted,
+                                onRequestNotificationPermission = {
+                                    maybeRequestNotificationPermission(true)
+                                },
+                                onContinue = {
+                                    screen = AppScreen.Dashboard(s.dashboardInstance)
+                                },
                             )
                         }
 

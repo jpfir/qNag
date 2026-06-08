@@ -1,7 +1,7 @@
 package com.exogroup.qnag.data
 
 data class NotificationSettings(
-    val notificationsEnabled: Boolean = false,
+    val notificationsEnabled: Boolean = true,
 
     // Which problem types trigger a notification
     val notifyOnCriticalServices: Boolean = true,

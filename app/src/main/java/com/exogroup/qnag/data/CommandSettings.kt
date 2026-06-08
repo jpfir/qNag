@@ -16,7 +16,7 @@ data class CommandSettings(
     val showBatteryOptimizationHint: Boolean = true,
 
     // ── Foreground monitoring service ────────────────────────────────────────
-    val keepMonitoringActive: Boolean = false,
+    val keepMonitoringActive: Boolean = true,
     // Interval for the foreground service polling — independent of WorkManager's 15-min minimum.
     val foregroundPollingIntervalSeconds: Int = 60,
 
