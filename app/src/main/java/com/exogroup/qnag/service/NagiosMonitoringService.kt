@@ -334,9 +334,10 @@ class NagiosMonitoringService : Service() {
                 }
             }
 
-            // ── One-notification dispatch ─────────────────────────────────────────
-            // In foreground/reliability mode there is EXACTLY ONE qNag notification:
-            // the foreground notification itself, updated in-place with the alert summary.
+            // ── Notification dispatch ─────────────────────────────────────────────
+            // Foreground mode posts TWO notifications per poll cycle:
+            //  1. MONITORING_SERVICE_NOTIF_ID — persistent foreground notification (summary/status).
+            //  2. NAGIOS_ALERT_NOTIF_ID — wearable-compatible alert via nagios_alerts channel.
             // Sound is produced by AlertSoundController (in-app, independent of channel settings).
             when (notifSettings.notificationMode) {
                 NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS -> {
@@ -368,6 +369,17 @@ class NagiosMonitoringService : Service() {
                         settings             = notifSettings,
                         debug                = cmdSettings.debugCommandSubmission,
                     )
+
+                    // Wearable-compatible alert notification — separate from the foreground
+                    // notification so Samsung Galaxy Wearable / Galaxy Fit can discover qNag
+                    // and forward alerts to the watch.
+                    NotificationHelper.evaluateAndPostAlertNotification(
+                        context        = applicationContext,
+                        allProblems    = allCurrentProblems,
+                        newProblems    = toNotify,
+                        failedInstances = failedInstanceNames,
+                        visualState    = visualState,
+                    )
                 }
                 NotificationMode.PER_PROBLEM -> {
                     val (summaryTitle, bodyLines) = NotificationHelper.buildSummaryContent(
@@ -383,6 +395,15 @@ class NagiosMonitoringService : Service() {
                     updateForegroundNotification(summaryTitle, contentText, bigText,
                         visualStateColor(visualState), visualState)
                     NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
+
+                    // Wearable-compatible alert notification
+                    NotificationHelper.evaluateAndPostAlertNotification(
+                        context        = applicationContext,
+                        allProblems    = allCurrentProblems,
+                        newProblems    = toNotify,
+                        failedInstances = failedInstanceNames,
+                        visualState    = visualState,
+                    )
                 }
             }
 

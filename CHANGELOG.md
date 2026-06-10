@@ -13,6 +13,25 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ### Added
 
+**Smartwatch / wearable notification compatibility**
+- Added a dedicated `nagios_alerts` notification channel (IMPORTANCE_HIGH, vibration, public
+  lockscreen visibility) separate from the low-noise `Reliability service` foreground channel.
+- In Reliability Mode the foreground service now posts a second notification through
+  `nagios_alerts` on every poll cycle alongside the existing persistent status notification.
+  The alert notification uses `setOngoing(false)`, `setLocalOnly(false)`,
+  `setVisibility(VISIBILITY_PUBLIC)`, and a vibration pattern so Samsung Galaxy Wearable /
+  Galaxy Fit 3 (and compatible wearables) can detect qNag as a notification source and
+  forward alerts to the watch exactly as aNag does.
+- Re-alert logic: the alert notification vibrates/alerts only when new problems appear or the
+  worst severity worsens; repeat poll cycles with unchanged state update the notification
+  silently via `setOnlyAlertOnce`.  On all-clear the notification is cancelled automatically.
+- Added **"Send test alert notification"** button in Settings → Monitoring Health (Recovery
+  actions).  Posting a test alert registers qNag in the Samsung Galaxy Wearable notification
+  app list without waiting for a real Nagios problem.
+- Renamed the foreground service notification channel display name from
+  "qNag Monitoring Service" to "Reliability service" for clarity in Android notification
+  settings.
+
 **Reliability Checklist**
 - After the first Nagios instance is added or imported, a Reliability Checklist screen is
   shown before the Dashboard so users can verify monitoring will work reliably on their device.

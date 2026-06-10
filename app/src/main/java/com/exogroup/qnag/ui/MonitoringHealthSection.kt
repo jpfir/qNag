@@ -291,6 +291,21 @@ fun MonitoringHealthSection(
                 ) { Text("Stop sound", style = MaterialTheme.typography.bodySmall) }
             }
         }
+
+        // Test alert notification — posts through the wearable-compatible nagios_alerts channel
+        // so Samsung Galaxy Wearable / Galaxy Fit discovers qNag and allows notification forwarding.
+        OutlinedButton(
+            onClick = { NotificationHelper.postTestAlertNotification(context) },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Send test alert notification", style = MaterialTheme.typography.bodySmall)
+        }
+        Text(
+            "Posts a test notification through the Nagios alerts channel. " +
+            "Required for Samsung Galaxy Wearable / Galaxy Fit to detect qNag as a notification source.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

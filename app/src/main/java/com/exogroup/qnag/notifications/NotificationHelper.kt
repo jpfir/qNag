@@ -98,10 +98,12 @@ object NotificationHelper {
     const val CHANNEL_ALERT_SUMMARY = "qnag_alert_summary"   // compact single-summary mode
     const val CHANNEL_STALE = "qnag_stale"                   // stale-monitoring self-alert
     const val CHANNEL_ALERTS = "qnag_alerts"                 // legacy fallback
+    const val CHANNEL_NAGIOS_ALERTS = "nagios_alerts"         // wearable-compatible alert channel
 
     const val MONITORING_SERVICE_NOTIF_ID = 9001
     const val ALERT_SUMMARY_NOTIF_ID = 9002
     const val STALE_NOTIF_ID = 9003
+    const val NAGIOS_ALERT_NOTIF_ID = 9004
 
     // When ≥ this many new problems of the same state arrive in one poll cycle,
     // collapse them into a single summary notification to prevent a sound storm.
@@ -114,6 +116,7 @@ object NotificationHelper {
     // Summary-mode sound state is persisted in SharedPreferences (Goal 3) so it survives
     // process restarts.  Key: worst severity seen last poll + timestamp of last sound.
     private const val ALERT_SOUND_PREFS = "qnag_alert_sound_state"
+    private const val ALERT_NOTIF_PREFS = "qnag_alert_notif_state"
 
     // ── Channel creation ──────────────────────────────────────────────────────
 
@@ -126,7 +129,7 @@ object NotificationHelper {
             NotificationChannel(id, name, importance).apply { description = desc }
 
         mgr.createNotificationChannel(
-            channel(CHANNEL_MONITORING, "qNag Monitoring Service", NotificationManager.IMPORTANCE_LOW,
+            channel(CHANNEL_MONITORING, "Reliability service", NotificationManager.IMPORTANCE_LOW,
                 "Persistent notification while foreground monitoring is active").apply { setShowBadge(false) }
         )
         mgr.createNotificationChannel(
@@ -164,6 +167,14 @@ object NotificationHelper {
         mgr.createNotificationChannel(
             channel(CHANNEL_ALERTS, "qNag Alerts (legacy)", NotificationManager.IMPORTANCE_DEFAULT,
                 "Legacy fallback channel")
+        )
+        mgr.createNotificationChannel(
+            channel(CHANNEL_NAGIOS_ALERTS, "Nagios alerts", NotificationManager.IMPORTANCE_HIGH,
+                "High-priority Nagios alert notifications — CRITICAL, WARNING, host DOWN, and fetch failures").apply {
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 300, 200, 300)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+            }
         )
     }
 
@@ -529,6 +540,107 @@ object NotificationHelper {
 
     fun cancelFetchFailure(context: Context, instanceId: String) {
         NotificationManagerCompat.from(context).cancel(fetchFailureNotificationId(instanceId))
+    }
+
+    // ── Wearable-compatible alert notification (NAGIOS_ALERT_NOTIF_ID) ────────
+
+    /**
+     * Post or update the wearable-compatible alert notification.
+     *
+     * Uses [CHANNEL_NAGIOS_ALERTS] (IMPORTANCE_HIGH, vibration, public lockscreen) so Samsung
+     * Galaxy Wearable / Galaxy Fit can discover qNag and forward alerts to the watch.
+     *
+     * Sound / vibration are triggered only when [shouldReAlert] is true (new problems or
+     * severity worsened); otherwise the notification is updated silently via setOnlyAlertOnce.
+     *
+     * Call this on every foreground-service poll cycle after updating the foreground notification.
+     * The function cancels itself when [allProblems] and [failedInstances] are both empty.
+     */
+    @SuppressLint("MissingPermission")
+    fun evaluateAndPostAlertNotification(
+        context: Context,
+        allProblems: List<ProblemToNotify>,
+        newProblems: List<ProblemToNotify>,
+        failedInstances: List<String>,
+        visualState: NotificationVisualState,
+    ) {
+        if (!hasPermission(context)) return
+
+        if (allProblems.isEmpty() && failedInstances.isEmpty()) {
+            NotificationManagerCompat.from(context).cancel(NAGIOS_ALERT_NOTIF_ID)
+            saveAlertNotifSeverity(context, -1)
+            return
+        }
+
+        val hostDown = allProblems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_DOWN }
+        val hostUnr  = allProblems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_UNREACHABLE }
+        val svcCrit  = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_CRITICAL }
+        val svcWarn  = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_WARNING }
+        val svcUnk   = allProblems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_UNKNOWN }
+        val currentWorst = worstSeverity(hostDown, hostUnr, svcCrit, svcWarn, svcUnk)
+            .let { if (failedInstances.isNotEmpty()) maxOf(it, 1) else it }
+
+        val prevWorst = loadAlertNotifSeverity(context)
+        val shouldReAlert = newProblems.isNotEmpty() || currentWorst > prevWorst || prevWorst < 0
+        saveAlertNotifSeverity(context, currentWorst)
+
+        val (title, bodyLines) = buildSummaryContent(allProblems, failedInstances)
+        val body = bodyLines.joinToString("\n")
+
+        val notif = NotificationCompat.Builder(context, CHANNEL_NAGIOS_ALERTS)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setColor(visualStateColor(visualState))
+            .setLargeIcon(NotificationIconHelper.largeIcon(visualState))
+            .setContentTitle(title)
+            .setContentText(bodyLines.firstOrNull() ?: body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(mainActivityIntent(context))
+            .setOngoing(false)
+            .setAutoCancel(false)
+            .setLocalOnly(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVibrate(longArrayOf(0, 300, 200, 300))
+            .setOnlyAlertOnce(!shouldReAlert)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(NAGIOS_ALERT_NOTIF_ID, notif)
+    }
+
+    /** Post a test notification through the wearable-compatible alert channel. */
+    @SuppressLint("MissingPermission")
+    fun postTestAlertNotification(context: Context) {
+        if (!hasPermission(context)) return
+        val notif = NotificationCompat.Builder(context, CHANNEL_NAGIOS_ALERTS)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setColor(visualStateColor(NotificationVisualState.WARNING))
+            .setLargeIcon(NotificationIconHelper.largeIcon(NotificationVisualState.WARNING))
+            .setContentTitle("qNag: test alert")
+            .setContentText("Tap to dismiss. Wearable forwarding is now enabled for qNag.")
+            .setContentIntent(mainActivityIntent(context))
+            .setOngoing(false)
+            .setAutoCancel(true)
+            .setLocalOnly(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVibrate(longArrayOf(0, 300, 200, 300))
+            .build()
+        NotificationManagerCompat.from(context).notify(NAGIOS_ALERT_NOTIF_ID, notif)
+    }
+
+    fun cancelNagiosAlertNotification(context: Context) {
+        NotificationManagerCompat.from(context).cancel(NAGIOS_ALERT_NOTIF_ID)
+        saveAlertNotifSeverity(context, -1)
+    }
+
+    private fun loadAlertNotifSeverity(context: Context): Int =
+        context.getSharedPreferences(ALERT_NOTIF_PREFS, Context.MODE_PRIVATE).getInt("worst", -1)
+
+    private fun saveAlertNotifSeverity(context: Context, severity: Int) {
+        context.getSharedPreferences(ALERT_NOTIF_PREFS, Context.MODE_PRIVATE)
+            .edit().putInt("worst", severity).apply()
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
