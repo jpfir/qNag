@@ -305,6 +305,9 @@ fun NotificationSettingsSection(
                 NotifRow("Respect scheduled downtime", settings.respectDowntime) {
                     onUpdate(settings.copy(respectDowntime = it))
                 }
+                NotifRow("Respect Nagios notification disabled state", settings.respectNagiosNotificationsDisabled) {
+                    onUpdate(settings.copy(respectNagiosNotificationsDisabled = it))
+                }
 
                 Spacer(Modifier.height(8.dp))
                 NotifSubheader("Refresh interval")

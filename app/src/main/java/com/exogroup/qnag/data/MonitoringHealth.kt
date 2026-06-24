@@ -47,7 +47,7 @@ object MonitoringHealth {
     fun recordBootOrUpdate(context: Context) =
         prefs(context).edit { putLong("last_boot_or_update", now()) }
 
-    // ── WorkManager schedule/cancel writers (Goal 2) ──────────────────────────
+    // ── WorkManager schedule/cancel writers ──────────────────────────
 
     /** Record that the periodic WorkManager job has been scheduled. */
     fun recordWorkerScheduled(context: Context, reason: String = "periodic") = prefs(context).edit {
@@ -120,7 +120,7 @@ object MonitoringHealth {
         val lastWorkerRunAt: Long?,
         val lastWorkerSuccessAt: Long?,
         val lastBootOrUpdateAt: Long?,
-        // WorkManager schedule state (Goal 2)
+        // WorkManager schedule state
         val workerScheduled: Boolean,
         val lastWorkerScheduledAt: Long?,
         val lastWorkerCanceledAt: Long?,

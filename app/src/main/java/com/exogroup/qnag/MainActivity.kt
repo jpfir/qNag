@@ -417,7 +417,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         notifPermissionGranted.value = NotificationHelper.hasPermission(this)
-        // Auto-restart Reliability Mode when the user opens/resumes the app (Goal 1).
+        // Auto-restart Reliability Mode when the user opens/resumes the app.
         // Only reads from the store when Reliability Mode is ON and service has died,
         // to avoid expensive reads on every resume.
         autoRestartIfEligible()

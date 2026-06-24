@@ -43,11 +43,16 @@ fun ProblemCard(
     // Overflow-menu actions — null = hidden from menu
     // True when Tier 2+ delay is active and this alert has not yet reached the threshold
     isTier2Waiting: Boolean = false,
+    // False while the list is scrolling or within 250 ms of scroll stop; also false in selection mode
+    swipeAllowed: Boolean = true,
     onOpenDetail: (() -> Unit)? = null,
     onCopyOutput: (() -> Unit)? = null,
     onShare: (() -> Unit)? = null,
     onOpenInNagios: (() -> Unit)? = null,
     onScheduleDowntime: (() -> Unit)? = null,
+    // Null = not shown; non-null = shown only when same-host services exist on this instance
+    onAckAllServicesOnHost: (() -> Unit)? = null,
+    onRecheckAllServicesOnHost: (() -> Unit)? = null,
     onToggleSelect: () -> Unit,
     onLongPress: () -> Unit,
     onUnack: (() -> Unit)? = null,
@@ -75,13 +80,14 @@ fun ProblemCard(
 
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
-            if (swipeLocked) return@rememberSwipeToDismissBoxState false
+            if (!swipeAllowed || swipeLocked) return@rememberSwipeToDismissBoxState false
             when (value) {
                 SwipeToDismissBoxValue.EndToStart -> { swipeLocked = true; onAck(); false }
                 SwipeToDismissBoxValue.StartToEnd -> { swipeLocked = true; onRecheck(); false }
                 else -> false
             }
-        }
+        },
+        positionalThreshold = { totalDistance -> totalDistance * 0.80f },
     )
 
     SwipeToDismissBox(
@@ -145,6 +151,8 @@ fun ProblemCard(
                     onShare = onShare,
                     onOpenInNagios = onOpenInNagios,
                     onScheduleDowntime = onScheduleDowntime,
+                    onAckAllServicesOnHost = onAckAllServicesOnHost,
+                    onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
                 )
             }
         }
@@ -168,6 +176,8 @@ private fun ProblemCardContent(
     onShare: (() -> Unit)? = null,
     onOpenInNagios: (() -> Unit)? = null,
     onScheduleDowntime: (() -> Unit)? = null,
+    onAckAllServicesOnHost: (() -> Unit)? = null,
+    onRecheckAllServicesOnHost: (() -> Unit)? = null,
 ) {
     Column(modifier = Modifier.padding(12.dp)) {
         // ── Name block — instance chip floats to top-right so names use full width ──
@@ -234,6 +244,18 @@ private fun ProblemCardContent(
                         text = { Text("Recheck") },
                         onClick = { menuExpanded = false; onRecheck() },
                     )
+                    onAckAllServicesOnHost?.let {
+                        DropdownMenuItem(
+                            text = { Text("ACK all services on host…") },
+                            onClick = { menuExpanded = false; it() },
+                        )
+                    }
+                    onRecheckAllServicesOnHost?.let {
+                        DropdownMenuItem(
+                            text = { Text("Recheck all services on host…") },
+                            onClick = { menuExpanded = false; it() },
+                        )
+                    }
                     onUnack?.let {
                         DropdownMenuItem(
                             text = { Text("Remove ACK") },
@@ -376,7 +398,7 @@ private fun CheckMetadataSection(problem: NagiosProblem) {
             CheckDetailRow("Last check", "${checkTime(ts)}  (${checkAge(now - ts)})")
         }
         problem.nextCheck?.let { ts ->
-            // Use distinct wording for future vs overdue (Goal 2)
+            // Use distinct wording for future vs overdue
             val nextText = if (ts > now) checkIn(ts - now) else checkOverdue(now - ts)
             CheckDetailRow("Next check", nextText)
         }

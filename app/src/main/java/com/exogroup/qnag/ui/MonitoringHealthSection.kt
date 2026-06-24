@@ -45,7 +45,7 @@ fun MonitoringHealthSection(
 ) {
     val context = LocalContext.current
 
-    // ── Live-refreshing state (Goal 4) ────────────────────────────────────────
+    // ── Live-refreshing state ────────────────────────────────────────
     var snapshot by remember { mutableStateOf(MonitoringHealth.getSnapshot(context)) }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
 
@@ -193,7 +193,7 @@ fun MonitoringHealthSection(
             HealthRow("DND policy access", if (dndPolicyGranted) "granted" else "NOT GRANTED", dndPolicyGranted)
         }
 
-        // ── Recovery actions (contextual — Goal 5) ─────────────────────────────
+        // ── Recovery actions (contextual) ─────────────────────────────
         Spacer(Modifier.height(8.dp))
         Text("Recovery actions", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
         HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))

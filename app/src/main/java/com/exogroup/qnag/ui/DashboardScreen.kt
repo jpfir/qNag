@@ -3,6 +3,7 @@ package com.exogroup.qnag.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -109,6 +110,47 @@ private fun buildSectionedRows(problems: List<NagiosProblem>): List<ProblemListR
         rows += ProblemListRow.Item(p)
     }
     return rows
+}
+
+// ── Host-level bulk action (ACK or Recheck all services on a host) ───────────
+
+private data class HostServiceTargets(
+    val resolvedInstance: NagiosInstance?,
+    val hostName: String,
+    val serviceTargets: List<NagiosProblem.ServiceProblem>,
+)
+
+private sealed class PendingHostAction {
+    abstract val clickedProblem: NagiosProblem
+    data class Ack(override val clickedProblem: NagiosProblem) : PendingHostAction()
+    data class Recheck(override val clickedProblem: NagiosProblem) : PendingHostAction()
+}
+
+private fun resolveHostServiceTargets(
+    clickedProblem: NagiosProblem,
+    selectedInstance: InstanceSelection,
+    currentInstance: NagiosInstance,
+    enabledInstances: List<NagiosInstance>,
+    currentProblems: List<NagiosProblem>,
+): HostServiceTargets {
+    val resolvedInstanceId = clickedProblem.instanceId.ifEmpty {
+        (selectedInstance as? InstanceSelection.Single)?.instance?.id ?: currentInstance.id
+    }
+    val resolvedInstance = when (selectedInstance) {
+        is InstanceSelection.All -> enabledInstances.find { it.id == resolvedInstanceId }
+        is InstanceSelection.Single -> selectedInstance.instance
+    }
+    val serviceTargets = currentProblems
+        .filterIsInstance<NagiosProblem.ServiceProblem>()
+        .filter { svc ->
+            val svcInstId = svc.instanceId.ifEmpty { resolvedInstanceId }
+            svcInstId == resolvedInstanceId && svc.hostName == clickedProblem.hostName
+        }
+    return HostServiceTargets(
+        resolvedInstance = resolvedInstance,
+        hostName = clickedProblem.hostName,
+        serviceTargets = serviceTargets,
+    )
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -249,6 +291,10 @@ fun DashboardScreen(
                 snackbarHostState.showSnackbar(cs.message, duration = SnackbarDuration.Short)
                 nagiosViewModel.clearCommandState()
             }
+            is CommandState.Warning -> {
+                snackbarHostState.showSnackbar(cs.message, duration = SnackbarDuration.Long)
+                nagiosViewModel.clearCommandState()
+            }
             is CommandState.Error -> {
                 snackbarHostState.showSnackbar("Error: ${cs.message}", duration = SnackbarDuration.Long)
                 nagiosViewModel.clearCommandState()
@@ -294,6 +340,9 @@ fun DashboardScreen(
     // Pending confirmation: set to problems to unack, cleared after confirm/dismiss
     var pendingUnack by remember { mutableStateOf<List<NagiosProblem>?>(null) }
 
+    // Pending host-level bulk action (ACK or Recheck all services on a host)
+    var pendingHostAction by remember { mutableStateOf<PendingHostAction?>(null) }
+
     // Pending downtime: list of problems (1 for card overflow, N for multi-select)
     // pendingDowntimeInstance is set for single-problem card overflow; null for multi-select.
     var pendingDowntimeProblems  by remember { mutableStateOf<List<NagiosProblem>?>(null) }
@@ -336,6 +385,69 @@ fun DashboardScreen(
             },
             dismissButton = {
                 TextButton(onClick = { pendingUnack = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    pendingHostAction?.let { action ->
+        val isAck = action is PendingHostAction.Ack
+        val hostName = action.clickedProblem.hostName
+        AlertDialog(
+            onDismissRequest = { pendingHostAction = null },
+            title = { Text(if (isAck) "ACK all services on host" else "Recheck all services on host") },
+            text = {
+                if (isAck) {
+                    Text("Are you sure you want to acknowledge all problem services on host $hostName?")
+                } else {
+                    Text("Are you sure you want to recheck all services on host $hostName?")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val currentProblems = when (val s = nagiosViewModel.uiState) {
+                        is DashboardState.Success -> s.problems
+                        is DashboardState.Loading -> s.previousProblems ?: emptyList()
+                        is DashboardState.Error -> s.previousProblems ?: emptyList()
+                        else -> emptyList()
+                    }
+                    val targets = resolveHostServiceTargets(
+                        clickedProblem = action.clickedProblem,
+                        selectedInstance = selectedInstance,
+                        currentInstance = instance,
+                        enabledInstances = enabledInstances,
+                        currentProblems = currentProblems,
+                    )
+                    val resolvedInstance = targets.resolvedInstance
+                    if (resolvedInstance != null) {
+                        when (action) {
+                            is PendingHostAction.Recheck -> {
+                                if (commandSettings.debugCommandSubmission) {
+                                    android.util.Log.d("qNag", "[HOST_BULK_RECHECK] instance=${resolvedInstance.id}/${resolvedInstance.name} host=${targets.hostName} targets=${targets.serviceTargets.size} services=${targets.serviceTargets.joinToString(",") { it.serviceName }}")
+                                }
+                                if (targets.serviceTargets.isNotEmpty()) {
+                                    nagiosViewModel.recheckProblems(resolvedInstance, targets.serviceTargets, commandSettings)
+                                }
+                            }
+                            is PendingHostAction.Ack -> {
+                                val ackTargets = targets.serviceTargets.filter { !it.acknowledged && !isLocallyAcked(it) }
+                                if (commandSettings.debugCommandSubmission) {
+                                    val skippedAlreadyAcked = targets.serviceTargets.count { it.acknowledged }
+                                    val skippedLocallyAcked = targets.serviceTargets.count { !it.acknowledged && isLocallyAcked(it) }
+                                    android.util.Log.d("qNag", "[HOST_BULK_ACK] instance=${resolvedInstance.id}/${resolvedInstance.name} host=${targets.hostName} resolved=${targets.serviceTargets.size} ackTargets=${ackTargets.size} skippedAlreadyAcked=$skippedAlreadyAcked skippedLocallyAcked=$skippedLocallyAcked services=${ackTargets.joinToString(",") { it.serviceName }}")
+                                }
+                                if (ackTargets.isNotEmpty()) {
+                                    nagiosViewModel.acknowledgeProblems(resolvedInstance, ackTargets, commandSettings)
+                                }
+                            }
+                        }
+                    }
+                    pendingHostAction = null
+                }) {
+                    Text(if (isAck) "ACK all services" else "Recheck all services")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingHostAction = null }) { Text("Cancel") }
             },
         )
     }
@@ -390,7 +502,7 @@ fun DashboardScreen(
                         IconButton(onClick = { doRecheck(selectedProblems); selectedIds = emptySet() }) {
                             Icon(Icons.Default.Refresh, "Recheck selected")
                         }
-                        // Multi-select overflow menu (Goal 8)
+                        // Multi-select overflow menu
                         val context = androidx.compose.ui.platform.LocalContext.current
                         val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
                         var multiMenuExpanded by remember { mutableStateOf(false) }
@@ -499,6 +611,8 @@ fun DashboardScreen(
             showInstanceNames = showInstanceNames,
             isAllMode = selectedInstance is InstanceSelection.All,
             enabledInstances = enabledInstances,
+            selectedInstance = selectedInstance,
+            currentInstance = instance,
             onSelectInstance = onSwitchToInstance,
             isLocallyAcknowledged = isLocallyAcked,
             isRecheckPending = isRecheckPendingFn,
@@ -512,23 +626,21 @@ fun DashboardScreen(
             },
             onToggleSelect = { key -> selectedIds = if (selectedIds.contains(key)) selectedIds - key else selectedIds + key },
             onLongPress = { key -> selectedIds = selectedIds + key },
-            onAck = { key ->
-                visibleProblems.firstOrNull { problemKey(it) == key }?.let { doAck(listOf(it)) }
-            },
-            onRecheck = { key ->
-                visibleProblems.firstOrNull { problemKey(it) == key }?.let { doRecheck(listOf(it)) }
-            },
-            onUnack = { key ->
-                visibleProblems.firstOrNull { problemKey(it) == key }?.let { pendingUnack = listOf(it) }
-            },
-            onScheduleDowntime = { key ->
-                visibleProblems.firstOrNull { problemKey(it) == key }?.let { p ->
-                    val instId = p.instanceId.ifEmpty {
-                        (selectedInstance as? InstanceSelection.Single)?.instance?.id ?: instance.id
-                    }
-                    pendingDowntimeProblems = listOf(p)
-                    pendingDowntimeInstance = enabledInstances.find { it.id == instId }
+            onAckProblem = { problem -> doAck(listOf(problem)) },
+            onRecheckProblem = { problem -> doRecheck(listOf(problem)) },
+            onUnackProblem = { problem -> pendingUnack = listOf(problem) },
+            onScheduleDowntimeProblem = { problem ->
+                val instId = problem.instanceId.ifEmpty {
+                    (selectedInstance as? InstanceSelection.Single)?.instance?.id ?: instance.id
                 }
+                pendingDowntimeProblems = listOf(problem)
+                pendingDowntimeInstance = enabledInstances.find { it.id == instId }
+            },
+            onAckAllServicesOnHost = { clickedProblem ->
+                pendingHostAction = PendingHostAction.Ack(clickedProblem)
+            },
+            onRecheckAllServicesOnHost = { clickedProblem ->
+                pendingHostAction = PendingHostAction.Recheck(clickedProblem)
             },
             summaryExpanded = summaryExpanded,
             onSummaryExpandedChanged = { expanded ->
@@ -566,6 +678,8 @@ private fun DashboardContent(
     showInstanceNames: Boolean,
     isAllMode: Boolean,
     enabledInstances: List<NagiosInstance>,
+    selectedInstance: InstanceSelection,
+    currentInstance: NagiosInstance,
     onSelectInstance: (NagiosInstance) -> Unit,
     isLocallyAcknowledged: (NagiosProblem) -> Boolean,
     isRecheckPending: (NagiosProblem) -> Boolean = { false },
@@ -573,10 +687,12 @@ private fun DashboardContent(
     onOpenProblemDetail: (NagiosProblem) -> Unit = {},
     onToggleSelect: (String) -> Unit,
     onLongPress: (String) -> Unit,
-    onAck: (String) -> Unit,
-    onRecheck: (String) -> Unit,
-    onUnack: (String) -> Unit,
-    onScheduleDowntime: (String) -> Unit = {},
+    onAckProblem: (NagiosProblem) -> Unit,
+    onRecheckProblem: (NagiosProblem) -> Unit,
+    onUnackProblem: (NagiosProblem) -> Unit,
+    onScheduleDowntimeProblem: (NagiosProblem) -> Unit = {},
+    onAckAllServicesOnHost: (NagiosProblem) -> Unit = {},
+    onRecheckAllServicesOnHost: (NagiosProblem) -> Unit = {},
     summaryExpanded: Boolean = true,
     onSummaryExpandedChanged: (Boolean) -> Unit = {},
     quickFilter: QuickFilter? = null,
@@ -594,6 +710,14 @@ private fun DashboardContent(
         is DashboardState.Success -> state.instanceSummaries
         is DashboardState.Loading -> state.previousSummaries
         is DashboardState.Error -> state.previousSummaries
+        else -> emptyList()
+    }
+
+    // Raw (pre-filter) problems — used by ProblemList to compute same-host service availability
+    val rawProblems = when (state) {
+        is DashboardState.Success -> state.problems
+        is DashboardState.Loading -> state.previousProblems ?: emptyList()
+        is DashboardState.Error -> state.previousProblems ?: emptyList()
         else -> emptyList()
     }
 
@@ -630,12 +754,13 @@ private fun DashboardContent(
                     Spacer(Modifier.height(4.dp))
                     val base = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
                     val visible = applyInstanceAndQuickFilter(base, quickFilter, instanceFilter)
-                    ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
+                    ProblemList(problems = visible, rawProblems = rawProblems, selectedInstance = selectedInstance, currentInstance = currentInstance, enabledInstances = enabledInstances, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         isRecheckPending = isRecheckPending,
                         problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack, onScheduleDowntime = onScheduleDowntime,
+                        onAckProblem = onAckProblem, onRecheckProblem = onRecheckProblem, onUnackProblem = onUnackProblem, onScheduleDowntimeProblem = onScheduleDowntimeProblem,
+                        onAckAllServicesOnHost = onAckAllServicesOnHost, onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
                         isTier2Waiting = isTier2Waiting,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
                         isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
@@ -649,12 +774,13 @@ private fun DashboardContent(
                     Spacer(Modifier.height(4.dp))
                     val base = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
                     val visible = applyInstanceAndQuickFilter(base, quickFilter, instanceFilter)
-                    ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
+                    ProblemList(problems = visible, rawProblems = rawProblems, selectedInstance = selectedInstance, currentInstance = currentInstance, enabledInstances = enabledInstances, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         isRecheckPending = isRecheckPending,
                         problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack, onScheduleDowntime = onScheduleDowntime,
+                        onAckProblem = onAckProblem, onRecheckProblem = onRecheckProblem, onUnackProblem = onUnackProblem, onScheduleDowntimeProblem = onScheduleDowntimeProblem,
+                        onAckAllServicesOnHost = onAckAllServicesOnHost, onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
                         isTier2Waiting = isTier2Waiting,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
                         isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
@@ -688,12 +814,13 @@ private fun DashboardContent(
                         Text("No visible problems.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("Some problems may be hidden by filters.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    else -> ProblemList(problems = visible, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
+                    else -> ProblemList(problems = visible, rawProblems = rawProblems, selectedInstance = selectedInstance, currentInstance = currentInstance, enabledInstances = enabledInstances, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
                         showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
                         isRecheckPending = isRecheckPending, problemKey = problemKey,
                         onOpenProblemDetail = onOpenProblemDetail,
                         onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAck = onAck, onRecheck = onRecheck, onUnack = onUnack, onScheduleDowntime = onScheduleDowntime,
+                        onAckProblem = onAckProblem, onRecheckProblem = onRecheckProblem, onUnackProblem = onUnackProblem, onScheduleDowntimeProblem = onScheduleDowntimeProblem,
+                        onAckAllServicesOnHost = onAckAllServicesOnHost, onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
                         isTier2Waiting = isTier2Waiting,
                         header = { SummaryRow(visibleCount = visible.size, totalCount = state.problems.size, lastUpdated = state.lastUpdated, stale = false) },
                         isRefreshing = false, onRefresh = onRetry)
@@ -709,6 +836,10 @@ private fun DashboardContent(
 @Composable
 private fun ProblemList(
     problems: List<NagiosProblem>,
+    rawProblems: List<NagiosProblem>,
+    selectedInstance: InstanceSelection,
+    currentInstance: NagiosInstance,
+    enabledInstances: List<NagiosInstance>,
     selectedIds: Set<String>,
     isSelectionMode: Boolean,
     showInstanceNames: Boolean,
@@ -718,10 +849,12 @@ private fun ProblemList(
     onOpenProblemDetail: (NagiosProblem) -> Unit = {},
     onToggleSelect: (String) -> Unit,
     onLongPress: (String) -> Unit,
-    onAck: (String) -> Unit,
-    onRecheck: (String) -> Unit,
-    onUnack: (String) -> Unit = {},
-    onScheduleDowntime: (String) -> Unit = {},
+    onAckProblem: (NagiosProblem) -> Unit,
+    onRecheckProblem: (NagiosProblem) -> Unit,
+    onUnackProblem: (NagiosProblem) -> Unit = {},
+    onScheduleDowntimeProblem: (NagiosProblem) -> Unit = {},
+    onAckAllServicesOnHost: (NagiosProblem) -> Unit = {},
+    onRecheckAllServicesOnHost: (NagiosProblem) -> Unit = {},
     isTier2Waiting: (NagiosProblem) -> Boolean = { false },
     header: @Composable () -> Unit,
     isRefreshing: Boolean = false,
@@ -730,13 +863,24 @@ private fun ProblemList(
     val context = androidx.compose.ui.platform.LocalContext.current
     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
 
+    val listState = rememberLazyListState()
+    var swipeAllowed by remember { mutableStateOf(true) }
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) {
+            swipeAllowed = false
+        } else {
+            delay(250L)
+            swipeAllowed = true
+        }
+    }
+
     val rows = remember(problems) { buildSectionedRows(problems) }
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = onRefresh,
         modifier = Modifier.fillMaxSize(),
     ) {
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             item { header() }
             items(rows, key = { row -> when (row) {
                 is ProblemListRow.SectionHead -> "section_${row.label}"
@@ -748,6 +892,8 @@ private fun ProblemList(
                         val problem = row.problem
                         val key = problemKey(problem)
                         val locallyAcked = isLocallyAcknowledged(problem)
+                        val hostTargets = resolveHostServiceTargets(problem, selectedInstance, currentInstance, enabledInstances, rawProblems)
+                        val hasAckTargets = hostTargets.serviceTargets.any { !it.acknowledged && !isLocallyAcknowledged(it) }
                         ProblemCard(
                             problem = problem,
                             isSelected = selectedIds.contains(key),
@@ -756,6 +902,7 @@ private fun ProblemList(
                             isPendingAck = locallyAcked && !problem.acknowledged,
                             instanceName = if (showInstanceNames) problem.instanceName else "",
                             isRecheckPending = isRecheckPending(problem),
+                            swipeAllowed = swipeAllowed && !isSelectionMode,
                             onOpenDetail = { onOpenProblemDetail(problem) },
                             onCopyOutput = {
                                 clipboardManager.setText(
@@ -769,13 +916,15 @@ private fun ProblemList(
                                 }
                                 context.startActivity(android.content.Intent.createChooser(intent, "Share alert"))
                             },
-                            onUnack = if (problem.acknowledged || locallyAcked) { { onUnack(key) } } else null,
-                            onScheduleDowntime = { onScheduleDowntime(key) },
+                            onUnack = if (problem.acknowledged || locallyAcked) { { onUnackProblem(problem) } } else null,
+                            onScheduleDowntime = { onScheduleDowntimeProblem(problem) },
+                            onAckAllServicesOnHost = if (hasAckTargets) { { onAckAllServicesOnHost(problem) } } else null,
+                            onRecheckAllServicesOnHost = if (hostTargets.serviceTargets.isNotEmpty()) { { onRecheckAllServicesOnHost(problem) } } else null,
                             isTier2Waiting = isTier2Waiting(problem),
                             onToggleSelect = { onToggleSelect(key) },
                             onLongPress = { onLongPress(key) },
-                            onAck = { onAck(key) },
-                            onRecheck = { onRecheck(key) },
+                            onAck = { onAckProblem(problem) },
+                            onRecheck = { onRecheckProblem(problem) },
                         )
                     }
                 }

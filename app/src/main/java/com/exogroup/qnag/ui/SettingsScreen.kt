@@ -7,9 +7,11 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -18,10 +20,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.exogroup.qnag.R
 import com.exogroup.qnag.data.CommandSettings
 import com.exogroup.qnag.data.FilterSettings
 import com.exogroup.qnag.data.NagiosInstance
@@ -369,32 +375,140 @@ private fun MonitoringReliabilityPage(
 
 @Composable
 private fun AboutPage() {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    val context = LocalContext.current
+    val versionName = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrDefault("unknown")
+    }
+
+    var logoTapCount by remember { mutableIntStateOf(0) }
+    var showEasterEgg by remember { mutableStateOf(false) }
+    var coffeeAcked by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(8.dp))
+        Box(
+            modifier = Modifier
+                .size(96.dp)
+                .clip(CircleShape)
+                .clickable(onClickLabel = "qNag logo") {
+                    logoTapCount += 1
+                    if (logoTapCount >= 7) showEasterEgg = true
+                },
+        ) {
+            Image(
+                painter = painterResource(R.drawable.ic_launcher_background),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+            )
+            Image(
+                painter = painterResource(R.drawable.ic_launcher_foreground),
+                contentDescription = "qNag logo",
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Spacer(Modifier.height(4.dp))
         Text(
-            "qNag — FOSS Android Nagios client",
-            style = MaterialTheme.typography.titleMedium,
+            "qNag",
+            style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
         )
         Text(
-            "Reliability Mode uses a foreground service with a persistent status notification " +
-            "for phone-side Nagios monitoring.  qNag produces alert sounds via its own " +
-            "in-app audio engine, independent of notification-channel settings.",
+            "Version $versionName",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.height(4.dp))
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "Reliability Mode uses a foreground service with a persistent status notification " +
+                "for phone-side Nagios monitoring.  qNag produces alert sounds via its own " +
+                "in-app audio engine, independent of notification-channel settings.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "⚠ Android or vendor battery policies may still limit background execution. " +
+                "The Monitoring Health section shows warnings when issues are detected.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "qNag is designed to be robust for on-call use but should be one alerting path " +
+                "among others in critical environments.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            if (showEasterEgg) {
+                Spacer(Modifier.height(4.dp))
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            "Duck mode unlocked 🦆",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "$ ./qnag --status",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        EasterEggStatusLine("Monitoring brain", "OK",   MaterialTheme.colorScheme.primary)
+                        EasterEggStatusLine("Coffee level",     "WARNING", MaterialTheme.colorScheme.error)
+                        EasterEggStatusLine("Alert fatigue",    "CRITICAL", MaterialTheme.colorScheme.error)
+                        EasterEggStatusLine("Rubber duck",      "listening", MaterialTheme.colorScheme.onSurface)
+                        if (coffeeAcked) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "ACK submitted by qNag: \"Needs more coffee.\"",
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            Spacer(Modifier.height(8.dp))
+                            TextButton(
+                                onClick = { coffeeAcked = true },
+                                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                            ) {
+                                Text(
+                                    "Acknowledge coffee warning",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EasterEggStatusLine(label: String, value: String, valueColor: androidx.compose.ui.graphics.Color) {
+    Row {
         Text(
-            "⚠ Android or vendor battery policies may still limit background execution. " +
-            "The Monitoring Health section shows warnings when issues are detected.",
-            style = MaterialTheme.typography.bodySmall,
+            "$label: ",
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.height(4.dp))
         Text(
-            "qNag is designed to be robust for on-call use but should be one alerting path " +
-            "among others in critical environments.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            value,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            color = valueColor,
         )
     }
 }

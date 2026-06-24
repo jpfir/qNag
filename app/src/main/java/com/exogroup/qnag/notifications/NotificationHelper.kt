@@ -113,7 +113,7 @@ object NotificationHelper {
     // Resets on process restart; that's acceptable for the noisy per-problem mode.
     private val lastSoundTimestampMs = ConcurrentHashMap<String, Long>()
 
-    // Summary-mode sound state is persisted in SharedPreferences (Goal 3) so it survives
+    // Summary-mode sound state is persisted in SharedPreferences ( 3) so it survives
     // process restarts.  Key: worst severity seen last poll + timestamp of last sound.
     private const val ALERT_SOUND_PREFS = "qnag_alert_sound_state"
     private const val ALERT_NOTIF_PREFS = "qnag_alert_notif_state"
@@ -408,7 +408,7 @@ object NotificationHelper {
         else         -> 0
     }
 
-    // ── Persistent alert sound state (Goal 3) ────────────────────────────────
+    // ── Persistent alert sound state ( 3) ────────────────────────────────
     // Stored in plain SharedPreferences — no secrets, just timestamps and integers.
 
     fun loadAlertSoundState(context: Context): Pair<Int, Long> {

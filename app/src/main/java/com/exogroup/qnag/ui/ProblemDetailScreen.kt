@@ -22,11 +22,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.exogroup.qnag.data.AckComment
 import com.exogroup.qnag.data.CommandSettings
 import com.exogroup.qnag.data.NagiosInstance
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
 import com.exogroup.qnag.data.NagiosUrl
+import com.exogroup.qnag.viewmodel.AckCommentState
 import com.exogroup.qnag.viewmodel.CommandState
 import com.exogroup.qnag.viewmodel.NagiosViewModel
 import java.net.URLEncoder
@@ -88,12 +90,30 @@ fun ProblemDetailScreen(
                 snackbarHostState.showSnackbar(cs.message, duration = SnackbarDuration.Short)
                 nagiosViewModel.clearCommandState()
             }
+            is CommandState.Warning -> {
+                snackbarHostState.showSnackbar(cs.message, duration = SnackbarDuration.Long)
+                nagiosViewModel.clearCommandState()
+            }
             is CommandState.Error -> {
                 snackbarHostState.showSnackbar("Error: ${cs.message}", duration = SnackbarDuration.Long)
                 nagiosViewModel.clearCommandState()
             }
             else -> Unit
         }
+    }
+
+    // Fetch ACK comment from commentlist when the problem is server-acknowledged.
+    // Keys include problem identity so navigating to a different acknowledged problem re-fetches.
+    // Local-only (optimistic) ACKs are shown as "pending" without fetching — the comment
+    // will not be in Nagios yet.
+    LaunchedEffect(problem.uniqueId, problem.instanceId, problem.acknowledged, instance?.id) {
+        nagiosViewModel.clearAckCommentState()
+        if (problem.acknowledged && instance != null) {
+            nagiosViewModel.fetchAckComment(instance, problem)
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { nagiosViewModel.clearAckCommentState() }
     }
 
     Scaffold(
@@ -121,7 +141,7 @@ fun ProblemDetailScreen(
                     }
                 },
                 actions = {
-                    // Open in Nagios web UI (Goal 6)
+                    // Open in Nagios web UI
                     if (instance != null) {
                         IconButton(onClick = {
                             val url = nagiosExtInfoUrl(instance.url, problem)
@@ -132,7 +152,7 @@ fun ProblemDetailScreen(
                             Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Open in Nagios")
                         }
                     }
-                    // Share (Goal 7)
+                    // Share
                     IconButton(onClick = {
                         val intent = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
@@ -263,7 +283,7 @@ fun ProblemDetailScreen(
                     )
                 }
                 Spacer(Modifier.height(4.dp))
-                // Copy output button (Goal 7)
+                // Copy output button
                 TextButton(
                     onClick = {
                         clipboardManager.setText(AnnotatedString(problem.pluginOutput))
@@ -273,10 +293,30 @@ fun ProblemDetailScreen(
                 Spacer(Modifier.height(8.dp))
             }
 
+            // Acknowledgement section — server-acked, locally-acked, or any ack metadata present
+            val instanceId = instance?.id ?: problem.instanceId.ifEmpty { "" }
+            val isLocallyAcked = nagiosViewModel.isLocallyAcknowledged(instanceId, problem)
+            val hasAckSection = problem.acknowledged || isLocallyAcked ||
+                !problem.acknowledgedBy.isNullOrBlank() ||
+                !problem.acknowledgementComment.isNullOrBlank() ||
+                problem.acknowledgementTime != null
+            if (hasAckSection) {
+                item {
+                    DetailSectionHeader("Acknowledgement")
+                    DetailAcknowledgementSection(
+                        problem = problem,
+                        isLocallyAcked = isLocallyAcked,
+                        ackCommentState = nagiosViewModel.ackCommentState,
+                        clipboardManager = clipboardManager,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+
             // Full metadata
             item {
                 DetailSectionHeader("Details")
-                DetailMetadataFull(problem)
+                DetailMetadataFull(problem, instance)
                 Spacer(Modifier.height(32.dp))
             }
         }
@@ -285,16 +325,125 @@ fun ProblemDetailScreen(
 
 // ── Metadata section ──────────────────────────────────────────────────────────
 
+/**
+ * Shows acknowledgement status, author, time, and comment for the detail screen.
+ *
+ * Priority: commentlist data (server, freshest) > statusjson fields (from NagiosProblem) > fallbacks.
+ *
+ * States:
+ *  - Idle / Loading with no data yet  → "Loading…"
+ *  - Loading with existing statusjson data → show statusjson fields while fetching
+ *  - Loaded(comment != null)          → show commentlist data (server wins)
+ *  - Loaded(null) with statusjson     → show statusjson fields
+ *  - Loaded(null) without any data    → "ACKed, details unavailable"
+ *  - Error                            → show statusjson fallback or "unavailable"
+ *  - isLocallyAcked && !serverAcked   → "ACK pending confirmation" (no fetch yet)
+ */
 @Composable
-private fun DetailMetadataFull(problem: NagiosProblem) {
+private fun DetailAcknowledgementSection(
+    problem: NagiosProblem,
+    isLocallyAcked: Boolean,
+    ackCommentState: AckCommentState,
+    clipboardManager: androidx.compose.ui.platform.ClipboardManager,
+) {
+    val now = System.currentTimeMillis()
+    val isServerAcked = problem.acknowledged
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // ── Status row ────────────────────────────────────────────────────────
+        DetailRow(
+            "Status",
+            when {
+                isServerAcked  -> "acknowledged"
+                isLocallyAcked -> "ACK pending confirmation"
+                else           -> "not acknowledged"
+            },
+        )
+
+        // Pending local ACK: nothing from the server yet — stop here
+        if (!isServerAcked) return@Column
+
+        // ── Resolve effective fields: commentlist > statusjson ────────────────
+        val serverComment: AckComment? = (ackCommentState as? AckCommentState.Loaded)?.comment
+        val dataResolved = ackCommentState is AckCommentState.Loaded
+        val isLoading = ackCommentState is AckCommentState.Loading
+
+        val effectiveAuthor = serverComment?.author?.takeIf { it.isNotBlank() }
+            ?: problem.acknowledgedBy?.takeIf { it.isNotBlank() }
+        val effectiveTime = serverComment?.entryTime ?: problem.acknowledgementTime
+        val effectiveComment = serverComment?.comment?.takeIf { it.isNotBlank() }
+            ?: problem.acknowledgementComment?.takeIf { it.isNotBlank() }
+        val hasAnyDetail = effectiveAuthor != null || effectiveTime != null || effectiveComment != null
+
+        // ── Detail rows ───────────────────────────────────────────────────────
+        when {
+            // Data not yet available and still loading
+            !hasAnyDetail && isLoading -> {
+                DetailRow("Details", "Loading…")
+                return@Column
+            }
+            // Fetch done, nothing found anywhere
+            !hasAnyDetail && dataResolved -> {
+                DetailRow("Details", "ACKed, details unavailable")
+                return@Column
+            }
+            // Idle with nothing from statusjson: show nothing extra (fetch will start shortly)
+            !hasAnyDetail -> return@Column
+        }
+
+        // Author
+        if (effectiveAuthor != null) {
+            DetailRow("By", effectiveAuthor)
+        } else if (dataResolved) {
+            // Fetch finished but no author found
+            DetailRow("By", "not reported by Nagios")
+        }
+
+        // ACK time
+        effectiveTime?.let { ts ->
+            DetailRow("ACK time", "${checkTime(ts)}  (${checkAge(now - ts)})")
+        }
+
+        // Comment — only attempt once data is resolved or we already have statusjson comment
+        val showCommentFallback = dataResolved && effectiveComment == null
+        when {
+            !effectiveComment.isNullOrBlank() -> {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "Comment:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(2.dp))
+                SelectionContainer {
+                    Text(effectiveComment, style = MaterialTheme.typography.bodySmall)
+                }
+                TextButton(
+                    onClick = { clipboardManager.setText(AnnotatedString(effectiveComment)) },
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                ) {
+                    Text("Copy comment", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            showCommentFallback -> DetailRow("Comment", "not reported by Nagios")
+        }
+    }
+}
+
+@Composable
+private fun DetailMetadataFull(problem: NagiosProblem, instance: NagiosInstance? = null) {
     val now = System.currentTimeMillis()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // Instance — shown when available; helps when scrolled past the app bar subtitle
+        if (instance != null && instance.name.isNotEmpty()) {
+            DetailRow("Instance", instance.name)
+        }
+
         // Check timing
         problem.lastCheck?.let { ts ->
             DetailRow("Last check", "${checkTime(ts)}  (${checkAge(now - ts)})")
         }
         problem.nextCheck?.let { ts ->
-            // Goal 2: distinct wording for future vs past next-check
             val nextText = if (ts > now) checkIn(ts - now) else checkOverdue(now - ts)
             DetailRow("Next check", nextText)
         }
@@ -324,7 +473,7 @@ private fun DetailMetadataFull(problem: NagiosProblem) {
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Spacer(Modifier.height(4.dp))
 
-        // State flags — always shown for clarity
+        // State flags
         DetailRow("Acknowledged", if (problem.acknowledged) "yes" else "no")
         DetailRow("In downtime", if (problem.scheduledDowntimeDepth > 0) "yes (depth ${problem.scheduledDowntimeDepth})" else "no")
         DetailRow("Notifications", if (problem.notificationsEnabled) "enabled" else "disabled")
@@ -374,7 +523,7 @@ private fun DetailRow(label: String, value: String) {
     }
 }
 
-// ── Utilities (Goals 6, 7) ────────────────────────────────────────────────────
+// ── Utilities ────────────────────────────────────────────────────
 
 /** Generate a Nagios extinfo.cgi URL for host or service details. */
 fun nagiosExtInfoUrl(baseUrl: String, problem: NagiosProblem): String {

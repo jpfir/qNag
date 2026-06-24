@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.exogroup.qnag.data.AckComment
 import com.exogroup.qnag.data.AckSuppressCache
 import com.exogroup.qnag.data.CommandSettings
 import com.exogroup.qnag.data.EventLog
@@ -53,12 +54,23 @@ sealed class DashboardState {
     ) : DashboardState()
 }
 
+// ── ACK comment state (detail screen) ────────────────────────────────────────
+
+sealed class AckCommentState {
+    object Idle : AckCommentState()
+    object Loading : AckCommentState()
+    /** [comment] is null when the fetch succeeded but no acknowledgement comment was found. */
+    data class Loaded(val comment: AckComment?) : AckCommentState()
+    data class Error(val message: String) : AckCommentState()
+}
+
 // ── Command (ACK / recheck) state ─────────────────────────────────────────────
 
 sealed class CommandState {
     object Idle : CommandState()
     object Loading : CommandState()
     data class Success(val message: String) : CommandState()
+    data class Warning(val message: String) : CommandState()
     data class Error(val message: String) : CommandState()
 }
 
@@ -291,7 +303,14 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 withContext(Dispatchers.IO) { api.acknowledgeProblems(instance, fresh, settings) }
                 val now = System.currentTimeMillis()
-                fresh.forEach { localAcknowledgedMap[localAckKey(instance.id, it)] = now }
+                fresh.forEach { p ->
+                    localAcknowledgedMap[localAckKey(instance.id, p)] = LocalAckOverlay(
+                        submittedAt = now,
+                        hostName = p.hostName,
+                        serviceName = (p as? NagiosProblem.ServiceProblem)?.serviceName,
+                        instanceId = instance.id,
+                    )
+                }
                 // Write to suppress cache so background polling doesn't re-notify before Nagios confirms
                 AckSuppressCache.recordAcked(
                     appContext,
@@ -351,7 +370,14 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
                 val now = System.currentTimeMillis()
-                fresh.forEach { localAcknowledgedMap[localAckKey(it.instanceId, it)] = now }
+                fresh.forEach { p ->
+                    localAcknowledgedMap[localAckKey(p.instanceId, p)] = LocalAckOverlay(
+                        submittedAt = now,
+                        hostName = p.hostName,
+                        serviceName = (p as? NagiosProblem.ServiceProblem)?.serviceName,
+                        instanceId = p.instanceId,
+                    )
+                }
                 AckSuppressCache.recordAcked(
                     appContext,
                     fresh.map { AckSuppressCache.suppressKey(it.instanceId, it) }.toSet(),
@@ -625,8 +651,6 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // ── Pending recheck overlay (Goal 4) ─────────────────────────────────────
-    //
     // Tracks problems for which a forced recheck was submitted but Nagios has not yet
     // executed the check (lastCheck < submittedAt).  While pending, ProblemCard shows
     // "Recheck pending — waiting for fresh result".
@@ -675,45 +699,153 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
     //
     // Keys use U+001F as separator between instanceId and uniqueId to prevent
     // false prefix matches when one instance UUID is a prefix of another.
+    //
+    // Grace period: keep the optimistic ACK chip visible for LOCAL_ACK_GRACE_MS after submission
+    // even if Nagios still returns acknowledged=false.  Remove immediately if Nagios confirms
+    // acknowledged=true.  Warn the user if still unconfirmed after the grace period.
 
-    private val localAcknowledgedMap = mutableStateMapOf<String, Long>()
+    private data class LocalAckOverlay(
+        val submittedAt: Long,
+        val hostName: String,
+        val serviceName: String?,
+        val instanceId: String,
+    )
+
+    private val localAcknowledgedMap = mutableStateMapOf<String, LocalAckOverlay>()
 
     fun isLocallyAcknowledged(instanceId: String, problem: NagiosProblem): Boolean {
-        val ts = localAcknowledgedMap[localAckKey(instanceId, problem)] ?: return false
-        return (System.currentTimeMillis() - ts) < LOCAL_ACK_TTL_MS
+        val overlay = localAcknowledgedMap[localAckKey(instanceId, problem)] ?: return false
+        return (System.currentTimeMillis() - overlay.submittedAt) < LOCAL_ACK_TTL_MS
     }
 
     private fun localAckKey(instanceId: String, problem: NagiosProblem): String =
         "$instanceId$SEP${problem.uniqueId}"
 
-    /** Remove local ACK entries confirmed by server or expired (single-instance fetch). */
+    /**
+     * Reconcile local ACK overlays for a single instance.
+     *
+     * - Server acknowledged=true  → remove (confirmed)
+     * - Server acknowledged=false, age < GRACE → keep
+     * - Server acknowledged=false, age >= GRACE → remove and warn
+     * - Problem missing from server → keep until TTL
+     */
     private fun reconcileLocalAck(instanceId: String, serverProblems: List<NagiosProblem>) {
         val now = System.currentTimeMillis()
-        val serverAckedIds = serverProblems.filter { it.acknowledged }.map { it.uniqueId }.toSet()
         val prefix = "$instanceId$SEP"
+        val unconfirmed = mutableListOf<LocalAckOverlay>()
 
         val toRemove = localAcknowledgedMap.keys.toList().filter { key ->
             if (!key.startsWith(prefix)) return@filter false
+            val overlay = localAcknowledgedMap[key] ?: return@filter true
+            val ageMs = now - overlay.submittedAt
+            if (ageMs > LOCAL_ACK_TTL_MS) return@filter true
             val uniqueId = key.removePrefix(prefix)
-            val ts = localAcknowledgedMap[key] ?: return@filter true
-            uniqueId in serverAckedIds || (now - ts > LOCAL_ACK_TTL_MS)
+            val serverProblem = serverProblems.find { it.uniqueId == uniqueId }
+            when {
+                serverProblem == null -> {
+                    android.util.Log.d("qNag", "[LOCAL_ACK] keep pending instance=$instanceId host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"} ageMs=$ageMs")
+                    false
+                }
+                serverProblem.acknowledged -> {
+                    android.util.Log.d("qNag", "[LOCAL_ACK] confirmed by server instance=$instanceId host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"}")
+                    true
+                }
+                ageMs < LOCAL_ACK_GRACE_MS -> {
+                    android.util.Log.d("qNag", "[LOCAL_ACK] keep pending instance=$instanceId host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"} ageMs=$ageMs")
+                    false
+                }
+                else -> {
+                    android.util.Log.d("qNag", "[LOCAL_ACK] not confirmed after grace instance=$instanceId host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"}")
+                    unconfirmed.add(overlay)
+                    true
+                }
+            }
         }
+
         toRemove.forEach { localAcknowledgedMap.remove(it) }
+        if (unconfirmed.isNotEmpty() && commandState is CommandState.Idle) {
+            commandState = CommandState.Warning(buildUnconfirmedAckWarning(unconfirmed))
+        }
     }
 
-    /** Remove local ACK entries for all instances (ALL-mode fetch). */
+    /** Reconcile local ACK overlays across all instances (ALL-mode fetch). */
     private fun reconcileLocalAckAll(serverProblems: List<NagiosProblem>) {
         val now = System.currentTimeMillis()
-        val serverAckedKeys = serverProblems
-            .filter { it.acknowledged }
-            .map { localAckKey(it.instanceId, it) }
-            .toSet()
+        val serverProblemsByKey = serverProblems.associateBy { localAckKey(it.instanceId, it) }
+        val unconfirmed = mutableListOf<LocalAckOverlay>()
 
         val toRemove = localAcknowledgedMap.keys.toList().filter { key ->
-            val ts = localAcknowledgedMap[key] ?: return@filter true
-            (now - ts) > LOCAL_ACK_TTL_MS || key in serverAckedKeys
+            val overlay = localAcknowledgedMap[key] ?: return@filter true
+            val ageMs = now - overlay.submittedAt
+            if (ageMs > LOCAL_ACK_TTL_MS) return@filter true
+            val serverProblem = serverProblemsByKey[key]
+            when {
+                serverProblem == null -> {
+                    android.util.Log.d("qNag", "[LOCAL_ACK] keep pending instance=${overlay.instanceId} host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"} ageMs=$ageMs")
+                    false
+                }
+                serverProblem.acknowledged -> {
+                    android.util.Log.d("qNag", "[LOCAL_ACK] confirmed by server instance=${overlay.instanceId} host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"}")
+                    true
+                }
+                ageMs < LOCAL_ACK_GRACE_MS -> {
+                    android.util.Log.d("qNag", "[LOCAL_ACK] keep pending instance=${overlay.instanceId} host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"} ageMs=$ageMs")
+                    false
+                }
+                else -> {
+                    android.util.Log.d("qNag", "[LOCAL_ACK] not confirmed after grace instance=${overlay.instanceId} host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"}")
+                    unconfirmed.add(overlay)
+                    true
+                }
+            }
         }
+
         toRemove.forEach { localAcknowledgedMap.remove(it) }
+        if (unconfirmed.isNotEmpty() && commandState is CommandState.Idle) {
+            commandState = CommandState.Warning(buildUnconfirmedAckWarning(unconfirmed))
+        }
+    }
+
+    private fun buildUnconfirmedAckWarning(overlays: List<LocalAckOverlay>): String =
+        if (overlays.size == 1) {
+            val o = overlays.first()
+            if (o.serviceName != null) "ACK was submitted but Nagios did not confirm it for ${o.serviceName} on ${o.hostName}."
+            else "ACK was submitted but Nagios did not confirm it for host ${o.hostName}."
+        } else {
+            "ACK was submitted but Nagios did not confirm it for ${overlays.size} services."
+        }
+
+    // ── ACK comment (detail screen) ───────────────────────────────────────────
+
+    var ackCommentState by mutableStateOf<AckCommentState>(AckCommentState.Idle)
+        private set
+
+    private var ackCommentJob: Job? = null
+
+    /**
+     * Fetch the newest acknowledgement comment for [problem] from the Nagios commentlist
+     * endpoint.  Replaces any in-flight fetch.  Call [clearAckCommentState] when the detail
+     * screen leaves composition to cancel the job and reset the state.
+     */
+    fun fetchAckComment(instance: NagiosInstance, problem: NagiosProblem) {
+        ackCommentJob?.cancel()
+        ackCommentState = AckCommentState.Loading
+        ackCommentJob = viewModelScope.launch {
+            try {
+                val comment = withContext(Dispatchers.IO) { api.fetchAckComment(instance, problem) }
+                ackCommentState = AckCommentState.Loaded(comment)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ackCommentState = AckCommentState.Error(sanitizeError(e.message))
+            }
+        }
+    }
+
+    fun clearAckCommentState() {
+        ackCommentJob?.cancel()
+        ackCommentJob = null
+        ackCommentState = AckCommentState.Idle
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -793,6 +925,7 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
 
     companion object {
         private const val LOCAL_ACK_TTL_MS = 5 * 60 * 1_000L
+        private const val LOCAL_ACK_GRACE_MS = 60_000L
         private const val RECHECK_TTL_MS = 5 * 60 * 1_000L    // pending recheck expires after 5 min
         private const val COMMAND_COOLDOWN_MS = 5_000L
         // U+001F (unit separator): cannot appear in UUIDs or Nagios host/service names,

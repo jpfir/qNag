@@ -26,6 +26,7 @@ data class NotificationDecision(
 enum class NotificationDecisionReason {
     ALLOWED,
     STATE_DISABLED,
+    NOTIFICATIONS_DISABLED_SUPPRESSED,
     SOFT_STATE_SUPPRESSED,
     DOWNTIME_SUPPRESSED,
     ACKED_SUPPRESSED,
@@ -41,11 +42,12 @@ enum class NotificationDecisionReason {
  *
  * Decision order:
  *  1. State enabled check (CRITICAL/WARNING/etc. toggles).
- *  2. Soft-state suppression.
- *  3. Downtime suppression.
- *  4. ACK handling — suppress or allow re-notification after [NotificationSettings.notifyAckedAfterMinutes].
- *  5. Tier 2+ delay — suppress until alert age reaches the configured threshold.
- *  6. Allow.
+ *  2. Nagios notifications disabled suppression ([NotificationSettings.respectNagiosNotificationsDisabled]).
+ *  3. Soft-state suppression.
+ *  4. Downtime suppression.
+ *  5. ACK handling — suppress or allow re-notification after [NotificationSettings.notifyAckedAfterMinutes].
+ *  6. Tier 2+ delay — suppress until alert age reaches the configured threshold.
+ *  7. Allow.
  *
  * @param context Required for [ProblemAgeStore] / [AckAgeStore] lookups. Pass null to skip
  *   age-store checks (backward-compat path used by [shouldNotify] wrapper).
@@ -82,11 +84,15 @@ fun evaluateNotificationDecision(
     }
     if (!statusAllowed) return NotificationDecision(false, NotificationDecisionReason.STATE_DISABLED)
 
-    // ── 2. Soft-state ─────────────────────────────────────────────────────────
+    // ── 2. Nagios notifications disabled ──────────────────────────────────────
+    if (settings.respectNagiosNotificationsDisabled && !problem.notificationsEnabled)
+        return NotificationDecision(false, NotificationDecisionReason.NOTIFICATIONS_DISABLED_SUPPRESSED)
+
+    // ── 3. Soft-state ─────────────────────────────────────────────────────────
     if (settings.notifyOnlyHardState && problem.isSoftState)
         return NotificationDecision(false, NotificationDecisionReason.SOFT_STATE_SUPPRESSED)
 
-    // ── 3. Downtime ───────────────────────────────────────────────────────────
+    // ── 4. Downtime ───────────────────────────────────────────────────────────
     if (settings.respectDowntime && problem.scheduledDowntimeDepth > 0)
         return NotificationDecision(false, NotificationDecisionReason.DOWNTIME_SUPPRESSED)
     if (settings.respectDowntime &&
@@ -94,7 +100,7 @@ fun evaluateNotificationDecision(
         problem.hostScheduledDowntimeDepth > 0
     ) return NotificationDecision(false, NotificationDecisionReason.DOWNTIME_SUPPRESSED)
 
-    // ── 4. ACK handling ───────────────────────────────────────────────────────
+    // ── 5. ACK handling ───────────────────────────────────────────────────────
     if (problem.acknowledged) {
         if (settings.notifyAckedAfterEnabled) {
             // Resolve the ACK timestamp.
@@ -131,7 +137,7 @@ fun evaluateNotificationDecision(
         // notifyOnlyUnacknowledged=false: ACKed problems can still notify (fall through)
     }
 
-    // ── 5. Tier 2+ delay ─────────────────────────────────────────────────────
+    // ── 6. Tier 2+ delay ─────────────────────────────────────────────────────
     if (settings.tier2PlusEnabled) {
         val alertAgeMs = resolveAlertAgeMs(instanceId, problem, now, context, testProblemFirstSeenFn)
         val requiredMs  = tier2DelayMs(problem, settings)
@@ -150,7 +156,7 @@ fun evaluateNotificationDecision(
         )
     }
 
-    // ── 6. Allow ──────────────────────────────────────────────────────────────
+    // ── 7. Allow ──────────────────────────────────────────────────────────────
     return NotificationDecision(true, NotificationDecisionReason.ALLOWED)
 }
 

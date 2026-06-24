@@ -5,6 +5,7 @@ import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -146,6 +147,94 @@ class NagiosApi {
             )
         }
         return result
+    }
+
+    // ── Acknowledgement comment fetch ─────────────────────────────────────────
+
+    /**
+     * Fetch the most recent acknowledgement comment for [problem] from the Nagios commentlist
+     * endpoint.  Returns the newest ACK comment, or null if none exists.
+     *
+     * URL: statusjson.cgi?query=commentlist&details=true&hostname=<h>[&servicedescription=<s>]
+     *      &commenttypes=<host|service>&entrytypes=acknowledgement
+     *
+     * Client-side defensive filtering is always applied regardless of whether the server
+     * honours the query parameters.
+     */
+    fun fetchAckComment(instance: NagiosInstance, problem: NagiosProblem): AckComment? {
+        val credential = Credentials.basic(instance.username, instance.password)
+        val url = NagiosUrl.cgi(instance.url, "statusjson.cgi").toHttpUrl().newBuilder()
+            .addEncodedQueryParameter("query", "commentlist")
+            .addEncodedQueryParameter("details", "true")
+            .addQueryParameter("hostname", problem.hostName)
+            .apply {
+                if (problem is NagiosProblem.ServiceProblem) {
+                    addQueryParameter("servicedescription", problem.serviceName)
+                    addEncodedQueryParameter("commenttypes", "service")
+                } else {
+                    addEncodedQueryParameter("commenttypes", "host")
+                }
+                addEncodedQueryParameter("entrytypes", "acknowledgement")
+            }
+            .build()
+
+        val body = execute(url.toString(), credential)
+        return parseAckComment(JSONObject(body), problem)
+    }
+
+    /**
+     * Normalise the commentlist response into a flat list, filter defensively by host/service
+     * and entry_type==4 (ACKNOWLEDGEMENT_COMMENT), sort descending by entry_time, return newest.
+     *
+     * Handles both JSONObject (keyed by comment ID) and JSONArray shapes for the commentlist
+     * value, because different Nagios/API-proxy versions vary.
+     */
+    private fun parseAckComment(root: JSONObject, problem: NagiosProblem): AckComment? {
+        val commentListValue = root.optJSONObject("data")?.opt("commentlist") ?: return null
+
+        val entries = mutableListOf<JSONObject>()
+        when (commentListValue) {
+            is JSONObject -> {
+                val keys = commentListValue.keys()
+                while (keys.hasNext()) commentListValue.optJSONObject(keys.next())?.let { entries += it }
+            }
+            is JSONArray -> {
+                for (i in 0 until commentListValue.length()) commentListValue.optJSONObject(i)?.let { entries += it }
+            }
+            else -> return null
+        }
+
+        // Defensive client-side filter: host/service match + acknowledgement entry type (4)
+        val isService = problem is NagiosProblem.ServiceProblem
+        val filtered = entries.filter { c ->
+            val hostMatch = c.optString("host_name").equals(problem.hostName, ignoreCase = true)
+            val serviceMatch = if (isService) {
+                c.optString("service_description").equals(
+                    (problem as NagiosProblem.ServiceProblem).serviceName, ignoreCase = true,
+                )
+            } else {
+                c.optString("service_description", "").isBlank()
+            }
+            val entryType = c.opt("entry_type")
+            val isAck = when (entryType) {
+                is Int    -> entryType == 4
+                is Long   -> entryType == 4L
+                is String -> entryType == "4" || entryType.equals("acknowledgement", ignoreCase = true)
+                else      -> false
+            }
+            hostMatch && serviceMatch && isAck
+        }
+
+        // Sort descending by entry_time; pick the newest
+        val newest = filtered.maxByOrNull { c ->
+            c.optEpochMs("entry_time") ?: c.optEpochMs("comment_time") ?: 0L
+        } ?: return null
+
+        return AckComment(
+            author    = newest.optStringOrNull("author") ?: newest.optStringOrNull("comment_author") ?: "",
+            comment   = newest.optStringOrNull("comment_data") ?: newest.optStringOrNull("comment_text") ?: "",
+            entryTime = newest.optEpochMs("entry_time") ?: newest.optEpochMs("comment_time"),
+        )
     }
 
     // ── Commands (cmd.cgi) ────────────────────────────────────────────────────

@@ -9,7 +9,31 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ---
 
-## [1.0.3] - unreleased
+## [1.0.4] - 2026-06-24
+
+### Added
+
+**Host Bulk Actions**
+- Added "Recheck all services on host" and "ACK all services on host".
+- Evaluates service targets at confirm-time to prevent stale pre-computed lists from missing services.
+- Automatically excludes already-ACKed services from bulk targets.
+- Added debug log tags (`[HOST_BULK_RECHECK]`, `[HOST_BULK_ACK]`, `[LOCAL_ACK]`).
+
+**60-Second Local ACK Grace Period**
+- Added a 60-second optimistic UI hold after an ACK command to stop cards from flickering back to "unacknowledged" while Nagios processes the request.
+- Shows a `Warning` snackbar detailing unconfirmed services if the server fails to confirm within the window.
+
+**Alert Detail Improvements**
+- **Acknowledgement Section:** Surfaces status, author, timestamp, and a copyable comment.
+- **Live Nagios Comments:** Fetches actual ACK comments directly from Nagios (`statusjson.cgi?query=commentlist`), supporting Nagios 4.x JSON shapes.
+- **Instance Row:** Added the instance name to the Details section to identify sources in ALL-instances mode.
+
+**Settings & UI**
+- **About Page:** Added app icon and dynamically-tracked version number.
+
+---
+
+## [1.0.3] - 2026-06-08
 
 ### Added
 

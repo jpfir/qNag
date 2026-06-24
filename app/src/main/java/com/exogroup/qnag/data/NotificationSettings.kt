@@ -14,6 +14,9 @@ data class NotificationSettings(
     val notifyOnlyUnacknowledged: Boolean = true,
     val notifyOnlyHardState: Boolean = true,
     val respectDowntime: Boolean = true,
+    // When true (default), problems where Nagios has notifications_enabled=false are shown in
+    // the dashboard but produce no Android notifications, sound, or wearable alerts.
+    val respectNagiosNotificationsDisabled: Boolean = true,
 
     // Polling interval — minimum 15 minutes (WorkManager hard floor for background polling)
     val refreshIntervalMinutes: Int = 15,
