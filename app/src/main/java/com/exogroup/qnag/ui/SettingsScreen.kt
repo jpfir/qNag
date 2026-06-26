@@ -1,17 +1,18 @@
 package com.exogroup.qnag.ui
 
-import android.app.NotificationManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -26,6 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.exogroup.qnag.R
 import com.exogroup.qnag.data.CommandSettings
@@ -35,14 +37,16 @@ import com.exogroup.qnag.data.NotificationSettings
 
 // ── Settings navigation destinations ─────────────────────────────────────────
 
-private const val NAV_HOME            = "home"
-private const val NAV_INSTANCES       = "instances"
-private const val NAV_MONITORING      = "monitoring"
-private const val NAV_NOTIFICATIONS   = "notifications"
-private const val NAV_FILTERS         = "filters"
-private const val NAV_COMMANDS        = "commands"
-private const val NAV_ABOUT           = "about"
-private const val NAV_EVENT_LOG       = "event_log"
+private const val NAV_HOME             = "home"
+private const val NAV_INSTANCES        = "instances"
+private const val NAV_MONITORING       = "monitoring"
+private const val NAV_NOTIFICATIONS    = "notifications"
+private const val NAV_FILTERS          = "filters"
+private const val NAV_COMMANDS         = "commands"
+private const val NAV_RELIABILITY      = "reliability"
+private const val NAV_IMPORT_EXPORT    = "import_export"
+private const val NAV_ABOUT            = "about"
+private const val NAV_EVENT_LOG        = "event_log"
 private const val NAV_COMMAND_ACTIVITY = "command_activity"
 
 // ── Search index ──────────────────────────────────────────────────────────────
@@ -55,49 +59,47 @@ private data class SettingsItem(
 )
 
 private val SETTINGS_INDEX = listOf(
-    // Instances
-    SettingsItem("Instances", "Monitoring & Reliability", NAV_INSTANCES,
+    // ── Instances ─────────────────────────────────────────────────────────────
+    SettingsItem("Instances", "Instances", NAV_INSTANCES,
         listOf("instance", "nagios", "url", "server", "add", "edit", "remove", "enable", "disable")),
-    // Monitoring
-    SettingsItem("Reliability Mode", "Monitoring & Reliability", NAV_MONITORING,
-        listOf("reliability", "foreground", "service", "polling", "keepMonitoringActive", "interval")),
-    SettingsItem("WorkManager interval", "Monitoring & Reliability", NAV_MONITORING,
-        listOf("workmanager", "background", "15 minutes", "interval", "refresh")),
-    SettingsItem("Battery optimization", "Monitoring & Reliability", NAV_MONITORING,
-        listOf("battery", "optimization", "doze", "unrestricted")),
-    SettingsItem("Monitoring health", "Monitoring & Reliability", NAV_MONITORING,
-        listOf("health", "stale", "poll", "last", "foreground", "service", "running")),
-    SettingsItem("Stale monitoring alert", "Monitoring & Reliability", NAV_MONITORING,
-        listOf("stale", "threshold", "no poll", "alert", "monitoring")),
-    // Notifications
+
+    // ── Monitoring & Refresh ──────────────────────────────────────────────────
+    SettingsItem("Keep monitoring active", "Monitoring & Refresh", NAV_MONITORING,
+        listOf("monitoring", "active", "reliability", "foreground", "enable", "keep")),
+    SettingsItem("WorkManager refresh interval", "Monitoring & Refresh", NAV_MONITORING,
+        listOf("workmanager", "background", "15 minutes", "interval", "refresh", "poll", "frequency")),
+    SettingsItem("Stale monitoring alert", "Monitoring & Refresh", NAV_MONITORING,
+        listOf("stale", "threshold", "no poll", "alert", "overdue", "monitoring", "missed")),
+    SettingsItem("Notify on polling failure", "Monitoring & Refresh", NAV_MONITORING,
+        listOf("poll", "failure", "notify", "connection", "error", "fetch")),
+    SettingsItem("Background polling behavior", "Monitoring & Refresh", NAV_MONITORING,
+        listOf("background", "polling", "new problems", "repeat", "suppress", "notify only new")),
+
+    // ── Notifications & Sound ─────────────────────────────────────────────────
     SettingsItem("Enable notifications", "Notifications & Sound", NAV_NOTIFICATIONS,
         listOf("enable", "notifications", "disable", "permission")),
     SettingsItem("Notification mode", "Notifications & Sound", NAV_NOTIFICATIONS,
         listOf("mode", "summary", "per problem", "grouped", "notification")),
     SettingsItem("Alert sound mode", "Notifications & Sound", NAV_NOTIFICATIONS,
-        listOf("sound", "in-app", "alarm", "channel", "alert")),
+        listOf("sound", "in-app", "alarm", "channel", "alert", "ring", "ringtone")),
     SettingsItem("Sound in vibrate mode", "Notifications & Sound", NAV_NOTIFICATIONS,
         listOf("vibrate", "vibration", "silent", "sound", "ringer")),
     SettingsItem("DND / Do Not Disturb", "Notifications & Sound", NAV_NOTIFICATIONS,
         listOf("dnd", "do not disturb", "bypass", "override", "policy")),
-    SettingsItem("Sound cooldown", "Notifications & Sound", NAV_NOTIFICATIONS,
-        listOf("cooldown", "repeat", "sound", "flood", "throttle")),
-    SettingsItem("Notification channel health", "Notifications & Sound", NAV_NOTIFICATIONS,
-        listOf("channel", "muted", "disabled", "importance", "health")),
-    // Filters
-    SettingsItem("Hide acknowledged", "Filters", NAV_FILTERS,
-        listOf("acknowledged", "ack", "hide", "filter")),
-    SettingsItem("Soft state / hard state", "Filters", NAV_FILTERS,
-        listOf("soft", "hard", "state", "filter")),
-    SettingsItem("Downtime filter", "Filters", NAV_FILTERS,
-        listOf("downtime", "scheduled", "maintenance", "filter")),
-    SettingsItem("Host regex filter", "Filters", NAV_FILTERS,
-        listOf("host", "regex", "filter", "pattern")),
-    SettingsItem("Service regex filter", "Filters", NAV_FILTERS,
-        listOf("service", "regex", "filter", "pattern")),
-    SettingsItem("Status info regex", "Filters", NAV_FILTERS,
-        listOf("status", "info", "regex", "plugin", "output", "filter")),
-    // Commands
+    SettingsItem("Sound cooldown / anti-flood", "Notifications & Sound", NAV_NOTIFICATIONS,
+        listOf("cooldown", "repeat", "sound", "flood", "throttle", "anti-flood", "storm")),
+    SettingsItem("Notification channel sound settings", "Notifications & Sound", NAV_NOTIFICATIONS,
+        listOf("channel", "muted", "disabled", "importance", "health", "android",
+               "wearable", "watch", "wear", "smartwatch", "galaxy watch", "galaxy fit", "samsung")),
+    SettingsItem("Respect Nagios notification disabled state", "Notifications & Sound", NAV_NOTIFICATIONS,
+        listOf("nagios", "notif off", "notiff", "notification disabled", "respect", "notif disabled",
+               "nagios notif", "notification off")),
+    SettingsItem("Tier 2 alert delay", "Notifications & Sound", NAV_NOTIFICATIONS,
+        listOf("tier 2", "tier2", "delay", "transient", "spurious", "duration")),
+    SettingsItem("ACKed alert re-notification", "Notifications & Sound", NAV_NOTIFICATIONS,
+        listOf("acked", "re-notify", "stale ack", "old ack", "remind")),
+
+    // ── Commands ──────────────────────────────────────────────────────────────
     SettingsItem("Default ACK message", "Commands", NAV_COMMANDS,
         listOf("ack", "acknowledge", "message", "default", "comment")),
     SettingsItem("ACK author", "Commands", NAV_COMMANDS,
@@ -107,18 +109,55 @@ private val SETTINGS_INDEX = listOf(
     SettingsItem("ACK sticky / notify / persistent", "Commands", NAV_COMMANDS,
         listOf("ack", "sticky", "notify", "persistent", "acknowledge")),
     SettingsItem("Recheck date format", "Commands", NAV_COMMANDS,
-        listOf("recheck", "date", "format", "iso", "us", "euro", "start_time")),
+        listOf("recheck", "date", "format", "iso", "us", "euro", "start_time", "nagios date")),
     SettingsItem("Command debug logging", "Commands", NAV_COMMANDS,
-        listOf("debug", "log", "command", "ack", "recheck", "diagnose")),
-    // About
-    SettingsItem("About qNag", "About", NAV_ABOUT,
-        listOf("about", "version", "help", "readme", "reliability", "explanation")),
-    // Event Log
-    SettingsItem("Event Log", "About", NAV_EVENT_LOG,
-        listOf("log", "event", "debug", "troubleshoot", "history", "polling", "watchdog")),
-    // Command Activity
-    SettingsItem("Command Activity", "Commands", NAV_COMMAND_ACTIVITY,
+        listOf("debug", "log", "command", "ack", "recheck", "diagnose", "logcat")),
+
+    // ── Reliability ───────────────────────────────────────────────────────────
+    SettingsItem("Foreground service", "Reliability", NAV_RELIABILITY,
+        listOf("foreground", "service", "polling", "interval", "running")),
+    SettingsItem("Exact Alarm Watchdog", "Reliability", NAV_RELIABILITY,
+        listOf("exact", "alarm", "watchdog", "recovery", "schedule", "permission")),
+    SettingsItem("Battery optimization", "Reliability", NAV_RELIABILITY,
+        listOf("battery", "optimization", "doze", "unrestricted", "background", "battery saver")),
+    SettingsItem("Monitoring health & recovery", "Reliability", NAV_RELIABILITY,
+        listOf("health", "poll", "last", "service", "running", "status", "recovery", "restart",
+               "workmanager", "watchdog")),
+    SettingsItem("Wearable / Samsung Galaxy Watch notification setup", "Reliability", NAV_RELIABILITY,
+        listOf("wearable", "watch", "smartwatch", "galaxy watch", "wear", "galaxy fit", "samsung",
+               "samsung wearable", "test notification", "wear os")),
+
+    // ── Filters ───────────────────────────────────────────────────────────────
+    SettingsItem("Hide acknowledged", "Filters & Display", NAV_FILTERS,
+        listOf("acknowledged", "ack", "hide", "filter")),
+    SettingsItem("Soft state / hard state filter", "Filters & Display", NAV_FILTERS,
+        listOf("soft", "hard", "state", "filter")),
+    SettingsItem("Downtime filter", "Filters & Display", NAV_FILTERS,
+        listOf("downtime", "scheduled", "maintenance", "filter")),
+    SettingsItem("Host regex filter", "Filters & Display", NAV_FILTERS,
+        listOf("host", "regex", "filter", "pattern", "include", "exclude")),
+    SettingsItem("Service regex filter", "Filters & Display", NAV_FILTERS,
+        listOf("service", "regex", "filter", "pattern", "include", "exclude")),
+    SettingsItem("Status info regex", "Filters & Display", NAV_FILTERS,
+        listOf("status", "info", "regex", "plugin", "output", "filter")),
+
+    // ── Import / Export ───────────────────────────────────────────────────────
+    SettingsItem("Import instances", "Import / Export", NAV_IMPORT_EXPORT,
+        listOf("import", "restore", "backup", "json", "instances", "file")),
+    SettingsItem("Export instances", "Import / Export", NAV_IMPORT_EXPORT,
+        listOf("export", "backup", "save", "json", "instances", "file")),
+
+    // ── Command Activity ──────────────────────────────────────────────────────
+    SettingsItem("Command Activity", "Command Activity", NAV_COMMAND_ACTIVITY,
         listOf("command", "activity", "ack", "recheck", "downtime", "history", "status", "running", "failed")),
+
+    // ── Event Log ─────────────────────────────────────────────────────────────
+    SettingsItem("Event Log", "Event Log", NAV_EVENT_LOG,
+        listOf("log", "event", "debug", "troubleshoot", "history", "polling", "watchdog", "events")),
+
+    // ── About ─────────────────────────────────────────────────────────────────
+    SettingsItem("About qNag", "About", NAV_ABOUT,
+        listOf("about", "version", "help", "readme", "reliability", "explanation", "info")),
 )
 
 // ── Main SettingsScreen entry point ──────────────────────────────────────────
@@ -152,7 +191,6 @@ fun SettingsScreen(
 
     when (nav) {
         NAV_HOME -> SettingsHome(
-            commandSettings = commandSettings,
             onNavigate = { nav = it },
             onBack = onBack,
         )
@@ -164,10 +202,12 @@ fun SettingsScreen(
                 onExportInstances = onExportInstances,
             )
         }
-        NAV_MONITORING -> SettingsSubScreen("Monitoring & Reliability", onBack = { nav = NAV_HOME }) {
-            MonitoringReliabilityPage(
+        NAV_MONITORING -> SettingsSubScreen("Monitoring & Refresh", onBack = { nav = NAV_HOME }) {
+            MonitoringRefreshPage(
                 commandSettings = commandSettings,
+                notificationSettings = notificationSettings,
                 onUpdateCommandSettings = onUpdateCommandSettings,
+                onUpdateNotificationSettings = onUpdateNotificationSettings,
             )
         }
         NAV_NOTIFICATIONS -> SettingsSubScreen("Notifications & Sound", onBack = { nav = NAV_HOME }) {
@@ -177,11 +217,28 @@ fun SettingsScreen(
                 onUpdate = onUpdateNotificationSettings,
             )
         }
-        NAV_FILTERS -> SettingsSubScreen("Filters", onBack = { nav = NAV_HOME }) {
+        NAV_FILTERS -> SettingsSubScreen("Filters & Display", onBack = { nav = NAV_HOME }) {
             FilterSettingsSection(filters = filterSettings, onUpdate = onUpdateFilterSettings)
         }
         NAV_COMMANDS -> SettingsSubScreen("Commands", onBack = { nav = NAV_HOME }) {
-            CommandSettingsSection(settings = commandSettings, onUpdate = onUpdateCommandSettings)
+            CommandSettingsSection(
+                settings = commandSettings,
+                onUpdate = onUpdateCommandSettings,
+                showCommandsOnly = true,
+            )
+        }
+        NAV_RELIABILITY -> SettingsSubScreen("Reliability", onBack = { nav = NAV_HOME }) {
+            ReliabilityPage(
+                commandSettings = commandSettings,
+                notificationSettings = notificationSettings,
+                onUpdateCommandSettings = onUpdateCommandSettings,
+            )
+        }
+        NAV_IMPORT_EXPORT -> SettingsSubScreen("Import / Export", onBack = { nav = NAV_HOME }) {
+            ImportExportPage(
+                onImportInstances = onImportInstances,
+                onExportInstances = onExportInstances,
+            )
         }
         NAV_ABOUT -> SettingsSubScreen("About qNag", onBack = { nav = NAV_HOME }) {
             AboutPage()
@@ -196,7 +253,6 @@ fun SettingsScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsHome(
-    commandSettings: CommandSettings,
     onNavigate: (String) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -208,7 +264,7 @@ private fun SettingsHome(
             SETTINGS_INDEX.filter { item ->
                 item.title.lowercase().contains(q) ||
                 item.subtitle.lowercase().contains(q) ||
-                item.keywords.any { it.contains(q) }
+                item.keywords.any { it.lowercase().contains(q) }
             }
         }
     }
@@ -264,15 +320,37 @@ private fun SettingsHome(
                     }
                 }
             } else {
-                // Category cards
-                item { SettingsNavItem("Instances", "Add, edit, and configure Nagios instances", NAV_INSTANCES, onNavigate) }
-                item { SettingsNavItem("Monitoring & Reliability", "Reliability mode, foreground polling, health, stale alerts", NAV_MONITORING, onNavigate) }
-                item { SettingsNavItem("Notifications & Sound", "Alerts, in-app sound, DND, channel health", NAV_NOTIFICATIONS, onNavigate) }
-                item { SettingsNavItem("Filters", "Dashboard visibility filters and regex rules", NAV_FILTERS, onNavigate) }
-                item { SettingsNavItem("Commands", "ACK and recheck command behaviour", NAV_COMMANDS, onNavigate) }
-                item { SettingsNavItem("Command Activity", "Recent ACK, recheck and downtime commands", NAV_COMMAND_ACTIVITY, onNavigate) }
-                item { SettingsNavItem("About", "App version and reliability explanation", NAV_ABOUT, onNavigate) }
-                item { SettingsNavItem("Event Log", "In-app log of polling, commands, and reliability events", NAV_EVENT_LOG, onNavigate) }
+                // Category cards — ordered per the v1.0.6 proposed structure
+                item { SettingsNavItem("Instances",
+                    "Add, edit, and configure Nagios instances",
+                    NAV_INSTANCES, onNavigate) }
+                item { SettingsNavItem("Monitoring & Refresh",
+                    "Active monitoring, refresh interval, polling behavior",
+                    NAV_MONITORING, onNavigate) }
+                item { SettingsNavItem("Notifications & Sound",
+                    "Alerts, in-app sound, wearable, DND, channel health",
+                    NAV_NOTIFICATIONS, onNavigate) }
+                item { SettingsNavItem("Commands",
+                    "ACK defaults, recheck date format, debug logging",
+                    NAV_COMMANDS, onNavigate) }
+                item { SettingsNavItem("Reliability",
+                    "Foreground service, watchdog, battery, monitoring health",
+                    NAV_RELIABILITY, onNavigate) }
+                item { SettingsNavItem("Filters & Display",
+                    "Dashboard visibility filters and regex rules",
+                    NAV_FILTERS, onNavigate) }
+                item { SettingsNavItem("Import / Export",
+                    "Import and export instance configuration",
+                    NAV_IMPORT_EXPORT, onNavigate) }
+                item { SettingsNavItem("Command Activity",
+                    "Recent ACK, recheck and downtime commands",
+                    NAV_COMMAND_ACTIVITY, onNavigate) }
+                item { SettingsNavItem("About",
+                    "App version and info",
+                    NAV_ABOUT, onNavigate) }
+                item { SettingsNavItem("Event Log",
+                    "In-app log of polling, commands, and reliability events",
+                    NAV_EVENT_LOG, onNavigate) }
                 item { Spacer(Modifier.height(32.dp)) }
             }
         }
@@ -352,29 +430,206 @@ private fun SettingsSubScreen(
     }
 }
 
-// ── Monitoring & Reliability sub-screen ──────────────────────────────────────
+// ── Monitoring & Refresh sub-screen ──────────────────────────────────────────
 
 @Composable
-private fun MonitoringReliabilityPage(
+private fun MonitoringRefreshPage(
     commandSettings: CommandSettings,
+    notificationSettings: NotificationSettings,
+    onUpdateCommandSettings: (CommandSettings) -> Unit,
+    onUpdateNotificationSettings: (NotificationSettings) -> Unit,
+) {
+    var intervalText by remember(notificationSettings.refreshIntervalMinutes) {
+        mutableStateOf(notificationSettings.refreshIntervalMinutes.toString())
+    }
+    val intervalError: String? = intervalText.toIntOrNull().let { v ->
+        when {
+            v == null -> "Enter a whole number."
+            v < 15   -> "Minimum interval is 15 minutes."
+            else     -> null
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+
+        SectionHeader("Active monitoring")
+        CmdRow(
+            label = "Enable reliability mode (foreground service)",
+            checked = commandSettings.keepMonitoringActive,
+            onCheckedChange = { onUpdateCommandSettings(commandSettings.copy(keepMonitoringActive = it)) },
+        )
+        Text(
+            "Keeps qNag actively polling with a foreground service and persistent notification. " +
+            "Improves reliability for on-call use. Configure the polling interval and watchdog " +
+            "in Reliability settings.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        SectionHeader("WorkManager refresh interval")
+        OutlinedTextField(
+            value = intervalText,
+            onValueChange = { raw ->
+                intervalText = raw
+                val v = raw.toIntOrNull()
+                if (v != null && v >= 15) {
+                    onUpdateNotificationSettings(notificationSettings.copy(refreshIntervalMinutes = v))
+                }
+            },
+            label = { Text("Interval (minutes)") },
+            singleLine = true,
+            isError = intervalError != null,
+            supportingText = intervalError?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "Android WorkManager background polling has a minimum periodic interval of 15 minutes. " +
+            "When Reliability mode is active, the foreground service polls more frequently.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        SectionHeader("Stale monitoring alert")
+        CmdRow(
+            label = "Alert if monitoring goes stale",
+            checked = commandSettings.staleMonitoringAlertEnabled,
+            onCheckedChange = { onUpdateCommandSettings(commandSettings.copy(staleMonitoringAlertEnabled = it)) },
+        )
+        Text(
+            "Shows a notification if no poll succeeded within the stale threshold.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        AnimatedVisibility(visible = commandSettings.staleMonitoringAlertEnabled) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "Stale threshold: ${commandSettings.monitoringStaleThresholdMinutes} min",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(2, 5, 10, 15, 30).forEach { minutes ->
+                        FilterChip(
+                            selected = commandSettings.monitoringStaleThresholdMinutes == minutes,
+                            onClick = { onUpdateCommandSettings(commandSettings.copy(monitoringStaleThresholdMinutes = minutes)) },
+                            label = { Text("${minutes}m") },
+                        )
+                    }
+                }
+            }
+        }
+
+        SectionHeader("Background polling behavior")
+        CmdRow(
+            label = "Notify on fetch/polling failure",
+            checked = commandSettings.notifyOnFetchFailure,
+            onCheckedChange = { onUpdateCommandSettings(commandSettings.copy(notifyOnFetchFailure = it)) },
+        )
+        CmdRow(
+            label = "Notify only new problems (suppress repeats)",
+            checked = commandSettings.notifyOnlyNewProblems,
+            onCheckedChange = { onUpdateCommandSettings(commandSettings.copy(notifyOnlyNewProblems = it)) },
+        )
+        CmdRow(
+            label = "Show battery optimization hint",
+            checked = commandSettings.showBatteryOptimizationHint,
+            onCheckedChange = { onUpdateCommandSettings(commandSettings.copy(showBatteryOptimizationHint = it)) },
+        )
+    }
+}
+
+// ── Reliability sub-screen ────────────────────────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReliabilityPage(
+    commandSettings: CommandSettings,
+    notificationSettings: NotificationSettings,
     onUpdateCommandSettings: (CommandSettings) -> Unit,
 ) {
-    val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        // Reliability mode + foreground settings from CommandSettingsSection
-        // (Reuse the subsections inline)
-        SectionHeader("Reliability Mode")
-        CommandSettingsSection(
-            settings = commandSettings,
-            onUpdate = onUpdateCommandSettings,
-            showOnlyReliability = true,
-        )
+
+        SectionHeader("Foreground service")
+        if (!commandSettings.keepMonitoringActive) {
+            Text(
+                "Reliability mode is disabled. Enable it in Monitoring & Refresh to configure " +
+                "the foreground polling interval and watchdog.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            CmdSubheader("Foreground polling interval")
+            ForegroundIntervalPicker(
+                currentSeconds = commandSettings.foregroundPollingIntervalSeconds,
+                onSelect = { onUpdateCommandSettings(commandSettings.copy(foregroundPollingIntervalSeconds = it)) },
+            )
+            Spacer(Modifier.height(4.dp))
+            CmdSubheader("Exact Alarm Watchdog")
+            CmdRow(
+                label = "Enable watchdog recovery alarm",
+                checked = commandSettings.exactAlarmWatchdogEnabled,
+                onCheckedChange = { onUpdateCommandSettings(commandSettings.copy(exactAlarmWatchdogEnabled = it)) },
+            )
+            AnimatedVisibility(visible = commandSettings.exactAlarmWatchdogEnabled) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "Exact Alarm Watchdog fires periodically to check whether Reliability Mode " +
+                        "is still healthy. If the service has stopped or gone stale, it attempts " +
+                        "recovery. Android 12+ requires exact alarm permission " +
+                        "(Settings → Special app access → Alarms & reminders).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    WatchdogIntervalPicker(
+                        currentMinutes = commandSettings.exactAlarmWatchdogIntervalMinutes,
+                        onSelect = { onUpdateCommandSettings(commandSettings.copy(exactAlarmWatchdogIntervalMinutes = it)) },
+                    )
+                }
+            }
+        }
 
         SectionHeader("Battery & Background")
         BatteryOptimizationSection()
 
         SectionHeader("Monitoring Health")
-        MonitoringHealthSection(commandSettings = commandSettings)
+        MonitoringHealthSection(
+            commandSettings = commandSettings,
+            notificationSettings = notificationSettings,
+        )
+    }
+}
+
+// ── Import / Export sub-screen ────────────────────────────────────────────────
+
+@Composable
+private fun ImportExportPage(
+    onImportInstances: (() -> Unit)?,
+    onExportInstances: (() -> Unit)?,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionHeader("Instance configuration")
+        Text(
+            "Import and export your Nagios instance configuration. " +
+            "Passwords are not included in exports.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = { onImportInstances?.invoke() },
+                enabled = onImportInstances != null,
+                modifier = Modifier.weight(1f),
+            ) { Text("Import instances") }
+            OutlinedButton(
+                onClick = { onExportInstances?.invoke() },
+                enabled = onExportInstances != null,
+                modifier = Modifier.weight(1f),
+            ) { Text("Export instances") }
+        }
     }
 }
 

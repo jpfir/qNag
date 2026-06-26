@@ -20,6 +20,9 @@ import com.exogroup.qnag.data.instanceFingerprintPrefix
 import com.exogroup.qnag.data.problemFingerprint
 import com.exogroup.qnag.notifications.NotificationHelper
 import com.exogroup.qnag.notifications.ProblemToNotify
+import com.exogroup.qnag.notifications.deriveVisualStateFromProblems
+import com.exogroup.qnag.widget.WidgetInstanceSummary
+import com.exogroup.qnag.widget.WidgetSnapshotStore
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +67,9 @@ class NagiosPollingWorker(
         val targets = instances.filter { it.enabled && it.notificationsEnabled }
         val toNotify = mutableListOf<ProblemToNotify>()          // new/changed — drives sound in all modes
         val allCurrentProblems = mutableListOf<ProblemToNotify>() // all current — drives summary text
+        val allFilteredProblems = mutableListOf<NagiosProblem>()  // filtered — drives widget snapshot
+        val widgetInstanceSummaries = mutableListOf<WidgetInstanceSummary>()
+        var widgetFailCount = 0                                    // instances that threw during widget fetch
         val failedInstanceNames = mutableListOf<String>()         // names of instances that failed
         val prevTier2WaitingFps = loadTier2WaitingFps()
         val newTier2WaitingFps  = mutableSetOf<String>()
@@ -74,8 +80,9 @@ class NagiosPollingWorker(
         for (instance in targets) {
             try {
                 val problems = withContext(Dispatchers.IO) { api.fetchProblems(instance) }
-
                 val filtered = applyFilters(problems, settings.filterSettings)
+                allFilteredProblems.addAll(filtered)
+                widgetInstanceSummaries += WidgetSnapshotStore.buildInstanceSummary(instance.name, filtered)
 
                 val currentFingerprints = filtered
                     .map { problemFingerprint(instance.id, it) }
@@ -134,9 +141,15 @@ class NagiosPollingWorker(
 
             } catch (e: Exception) {
                 val safeError = sanitizeError(e.message)
+                widgetFailCount++
+                failedInstanceNames += instance.name
+                widgetInstanceSummaries += WidgetInstanceSummary(
+                    instanceName  = instance.name,
+                    totalProblems = 0, down = 0, unreachable = 0, critical = 0, warning = 0, unknown = 0,
+                    failed        = true,
+                )
                 when (notifSettings.notificationMode) {
-                    NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
-                        failedInstanceNames += instance.name
+                    NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS -> Unit
                     NotificationMode.PER_PROBLEM ->
                         if (cmdSettings.notifyOnFetchFailure && instance.id !in failedInstanceIds) {
                             NotificationHelper.notifyFetchFailure(applicationContext, instance.id, instance.name, safeError)
@@ -146,18 +159,39 @@ class NagiosPollingWorker(
             }
         }
 
-        when (notifSettings.notificationMode) {
-            NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
-                NotificationHelper.notifySummary(applicationContext, toNotify, allCurrentProblems, failedInstanceNames, notifSettings)
-            NotificationMode.PER_PROBLEM ->
-                NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
+        val widgetSourceTitle = if (targets.size == 1) targets[0].name else "All instances"
+
+        // Skip all summary/status notifications if foreground service is active.
+        // The foreground notification (MONITORING_SERVICE_NOTIF_ID) is the one visible
+        // status notification in Reliability Mode; posting background summaries here
+        // would create duplicate qNag notifications in the notification shade.
+        val serviceRunning = MonitoringHealth.getSnapshot(applicationContext).isServiceRunning
+        if (!serviceRunning) {
+            when (notifSettings.notificationMode) {
+                NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
+                    NotificationHelper.notifySummary(applicationContext, toNotify, allCurrentProblems, failedInstanceNames, notifSettings)
+                NotificationMode.PER_PROBLEM ->
+                    NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
+            }
+
+            val visualState = deriveVisualStateFromProblems(allCurrentProblems, failedInstanceNames.size)
+            NotificationHelper.evaluateAndPostAlertNotification(
+                context         = applicationContext,
+                allProblems     = allCurrentProblems,
+                newProblems     = toNotify,
+                failedInstances = failedInstanceNames,
+                visualState     = visualState,
+                sourceTitle     = widgetSourceTitle,
+                instanceTotal   = targets.size,
+                notifSettings   = notifSettings,
+            )
         }
 
         MonitoringHealth.recordWorkerSuccess(applicationContext)
         MonitoringHealth.recordPollFinished(applicationContext)
 
-        // Stale monitoring self-check
-        if (cmdSettings.staleMonitoringAlertEnabled) {
+        // Stale monitoring self-check (skip if service is running — service manages stale state)
+        if (!serviceRunning && cmdSettings.staleMonitoringAlertEnabled) {
             val lastSuccess = MonitoringHealth.getSnapshot(applicationContext).lastSuccessfulPollAt
             if (lastSuccess != null) {
                 val staleMs = cmdSettings.monitoringStaleThresholdMinutes * 60_000L
@@ -177,6 +211,23 @@ class NagiosPollingWorker(
         saveFingerprints(fingerprints)
         saveFailedInstances(failedInstanceIds)
         saveTier2WaitingFps(newTier2WaitingFps)
+
+        // Post or cancel the qNag refresh failure notification (skip if service is running)
+        if (!serviceRunning) {
+            if (failedInstanceNames.isNotEmpty()) {
+                NotificationHelper.notifyRefreshFailure(applicationContext, failedInstanceNames.size, targets.size)
+            } else {
+                NotificationHelper.cancelRefreshFailure(applicationContext)
+            }
+        }
+
+        // Update home screen widgets with the fresh filtered problem snapshot (best-effort)
+        runCatching {
+            WidgetSnapshotStore.saveAndRefreshWidgets(
+                applicationContext, allFilteredProblems, System.currentTimeMillis(),
+                widgetSourceTitle, widgetInstanceSummaries, instanceFailed = widgetFailCount,
+            )
+        }
 
         return Result.success()
     }

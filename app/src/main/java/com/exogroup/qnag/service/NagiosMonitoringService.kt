@@ -30,6 +30,11 @@ import com.exogroup.qnag.data.ProblemAgeStore
 import com.exogroup.qnag.data.evaluateNotificationDecision
 import com.exogroup.qnag.notifications.NotificationHelper
 import com.exogroup.qnag.notifications.NotificationIconHelper
+import com.exogroup.qnag.notifications.buildCompactSummaryFromProblems
+import com.exogroup.qnag.notifications.toBigText
+import com.exogroup.qnag.notifications.toOneLineText
+import com.exogroup.qnag.widget.WidgetInstanceSummary
+import com.exogroup.qnag.widget.WidgetSnapshotStore
 import com.exogroup.qnag.notifications.NotificationVisualState
 import com.exogroup.qnag.notifications.deriveVisualStateFromProblems
 import com.exogroup.qnag.notifications.visualStateColor
@@ -121,11 +126,13 @@ class NagiosMonitoringService : Service() {
         // Foreground service is active — cancel WorkManager to avoid double notifications
         BackgroundPollingScheduler.cancel(applicationContext)
         MonitoringHealth.recordServiceStart(applicationContext)
-        // Cancel any lingering background notifications — in foreground/Reliability Mode the ONE
-        // foreground notification (MONITORING_SERVICE_NOTIF_ID) carries the full alert summary.
-        // Stale and alert-summary notifications posted by WorkManager are redundant here.
+        // Cancel all background-posted summary/status notifications.
+        // In Reliability Mode the ONE foreground notification (MONITORING_SERVICE_NOTIF_ID)
+        // is the canonical status + watch-mirrored notification.
         NotificationHelper.cancelAlertSummary(applicationContext)
         NotificationHelper.cancelStale(applicationContext)
+        NotificationHelper.cancelNagiosAlertNotification(applicationContext)
+        NotificationHelper.cancelRefreshFailure(applicationContext)
 
         // Schedule (or refresh) the Exact Alarm Watchdog so it monitors this service.
         ExactAlarmWatchdogScheduler.schedule(applicationContext, settings)
@@ -234,6 +241,9 @@ class NagiosMonitoringService : Service() {
             val toNotify = mutableListOf<ProblemToNotify>()
             val allCurrentProblems = mutableListOf<ProblemToNotify>()
             val statusProblems = mutableListOf<ProblemToNotify>()
+            val allFilteredProblems = mutableListOf<NagiosProblem>() // filtered — drives widget snapshot
+            val widgetInstanceSummaries = mutableListOf<WidgetInstanceSummary>()
+            var widgetFailCount = 0
             val failedInstanceNames = mutableListOf<String>()
             // Tier 2+ transition tracking: fingerprints that were waiting last poll
             val prevTier2WaitingFps = loadTier2WaitingFps()
@@ -246,6 +256,8 @@ class NagiosMonitoringService : Service() {
                 try {
                     val problems = api.fetchProblems(instance)
                     val filtered = applyFilters(problems, settings.filterSettings)
+                    allFilteredProblems.addAll(filtered)
+                    widgetInstanceSummaries += WidgetSnapshotStore.buildInstanceSummary(instance.name, filtered)
 
                     val currentFps = filtered.map { problemFingerprint(instance.id, it) }.toSet()
                     val prefix = instanceFingerprintPrefix(instance.id)
@@ -321,6 +333,13 @@ class NagiosMonitoringService : Service() {
 
                 } catch (e: Exception) {
                     val safeError = sanitizeError(e.message)
+                    widgetFailCount++
+                    failedInstanceNames += instance.name
+                    widgetInstanceSummaries += WidgetInstanceSummary(
+                        instanceName  = instance.name,
+                        totalProblems = 0, down = 0, unreachable = 0, critical = 0, warning = 0, unknown = 0,
+                        failed        = true,
+                    )
                     EventLog.error(applicationContext, EventLog.CAT_POLLING,
                         "Poll failed — ${instance.name}: $safeError")
                     when (notifSettings.notificationMode) {
@@ -339,73 +358,72 @@ class NagiosMonitoringService : Service() {
             //  1. MONITORING_SERVICE_NOTIF_ID — persistent foreground notification (summary/status).
             //  2. NAGIOS_ALERT_NOTIF_ID — wearable-compatible alert via nagios_alerts channel.
             // Sound is produced by AlertSoundController (in-app, independent of channel settings).
-            when (notifSettings.notificationMode) {
-                NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS -> {
-                    val (summaryTitle, bodyLines) = NotificationHelper.buildSummaryContent(
-                        statusProblems, failedInstanceNames
-                    )
-                    val subtitle = "checking every ${effectiveIntervalS}s"
-                    val contentText = "${targets.size} instance${if (targets.size != 1) "s" else ""} · $subtitle"
-                    val bigText = if (bodyLines.isNotEmpty())
-                        bodyLines.joinToString("\n") + "\n$subtitle"
-                    else subtitle
-                    // Derive visual state from the current worst alert state and store for reuse
-                    val visualState = deriveVisualStateFromProblems(statusProblems, failedInstanceNames.size)
-                    currentVisualState = visualState
-                    if (cmdSettings.debugCommandSubmission) {
-                        android.util.Log.d("qNag", "[notify] visualState=$visualState " +
-                            "total=${allCurrentProblems.size} new=${toNotify.size} " +
-                            "failed=${failedInstanceNames.size}")
-                    }
-                    updateForegroundNotification(summaryTitle, contentText, bigText,
-                        visualStateColor(visualState), visualState)
+            val widgetSourceTitle = if (targets.size == 1) targets[0].name else "All instances"
+            val visualState = deriveVisualStateFromProblems(statusProblems, failedInstanceNames.size)
+            currentVisualState = visualState
 
-                    // Unified in-app sound decision — same logic used by foreground service and worker
+            // Build compact summary for consistent title/text across persistent + wearable notifs
+            val compactSummary = buildCompactSummaryFromProblems(
+                sourceTitle     = widgetSourceTitle,
+                allProblems     = statusProblems,
+                failedInstances = failedInstanceNames,
+                instanceTotal   = targets.size,
+                lastUpdated     = System.currentTimeMillis(),
+            )
+            val persistentTitle = when {
+                compactSummary.isFullFailure || compactSummary.isPartialFailure -> "qNag FAILURE"
+                else -> "qNag  ·  $widgetSourceTitle"
+            }
+            val persistentText  = compactSummary.toOneLineText()
+            val persistentBig   = compactSummary.toBigText() +
+                "\nchecking every ${effectiveIntervalS}s"
+
+            if (cmdSettings.debugCommandSubmission) {
+                android.util.Log.d("qNag", "[notify] visualState=$visualState " +
+                    "total=${allCurrentProblems.size} new=${toNotify.size} " +
+                    "failed=${failedInstanceNames.size}")
+            }
+
+            // Evaluate sound/wearable alert decision before posting the notification so
+            // the foreground notification can use the alert channel when warranted.
+            // SUMMARY_ONLY / GROUPED_DETAILS: evaluateAndPlay owns the decision and returns
+            //   true when a new/worse alert should pulse the wearable.
+            // PER_PROBLEM: per-problem notifications carry their own channel/vibration;
+            //   the foreground notification stays silent in that mode.
+            val shouldAlertWearable = when (notifSettings.notificationMode) {
+                NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
                     AlertSoundController.evaluateAndPlay(
-                        context              = applicationContext,
-                        allCurrentProblems   = allCurrentProblems,
-                        newProblems          = toNotify,
-                        failedInstanceNames  = failedInstanceNames,
-                        settings             = notifSettings,
-                        debug                = cmdSettings.debugCommandSubmission,
+                        context             = applicationContext,
+                        allCurrentProblems  = allCurrentProblems,
+                        newProblems         = toNotify,
+                        failedInstanceNames = failedInstanceNames,
+                        settings            = notifSettings,
+                        debug               = cmdSettings.debugCommandSubmission,
                     )
-
-                    // Wearable-compatible alert notification — separate from the foreground
-                    // notification so Samsung Galaxy Wearable / Galaxy Fit can discover qNag
-                    // and forward alerts to the watch.
-                    NotificationHelper.evaluateAndPostAlertNotification(
-                        context        = applicationContext,
-                        allProblems    = allCurrentProblems,
-                        newProblems    = toNotify,
-                        failedInstances = failedInstanceNames,
-                        visualState    = visualState,
-                    )
-                }
                 NotificationMode.PER_PROBLEM -> {
-                    val (summaryTitle, bodyLines) = NotificationHelper.buildSummaryContent(
-                        statusProblems, failedInstanceNames
-                    )
-                    val subtitle = "checking every ${effectiveIntervalS}s"
-                    val contentText = "${targets.size} instance${if (targets.size != 1) "s" else ""} · $subtitle"
-                    val bigText = if (bodyLines.isNotEmpty())
-                        bodyLines.joinToString("\n") + "\n$subtitle"
-                    else subtitle
-                    val visualState = deriveVisualStateFromProblems(statusProblems, failedInstanceNames.size)
-                    currentVisualState = visualState
-                    updateForegroundNotification(summaryTitle, contentText, bigText,
-                        visualStateColor(visualState), visualState)
                     NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
-
-                    // Wearable-compatible alert notification
-                    NotificationHelper.evaluateAndPostAlertNotification(
-                        context        = applicationContext,
-                        allProblems    = allCurrentProblems,
-                        newProblems    = toNotify,
-                        failedInstances = failedInstanceNames,
-                        visualState    = visualState,
-                    )
+                    false
                 }
             }
+
+            // Persistent status notification — always silent; the transient pulse below handles alerting.
+            updateForegroundNotification(persistentTitle, persistentText, persistentBig,
+                visualStateColor(visualState), visualState)
+
+            // Wearable alert pulse: post a short-lived NAGIOS_ALERT_NOTIF_ID notification only
+            // on real alert transitions. setTimeoutAfter keeps it transient so the shade does
+            // not retain a long-lived duplicate qNag notification.
+            if (shouldAlertWearable) {
+                NotificationHelper.postWearableAlertPulse(
+                    applicationContext, compactSummary, visualState, notifSettings)
+            } else if (allCurrentProblems.isEmpty() && failedInstanceNames.isEmpty()) {
+                NotificationHelper.cancelNagiosAlertNotification(applicationContext)
+            }
+
+            // Failure is already reflected in the foreground notification title/text.
+            // Cancel any refresh failure notification that may have been posted before
+            // the service started (e.g. by a widget refresh or a prior WorkManager run).
+            NotificationHelper.cancelRefreshFailure(applicationContext)
 
             MonitoringHealth.recordPollFinished(applicationContext)
 
@@ -435,6 +453,14 @@ class NagiosMonitoringService : Service() {
             saveFingerprints(fingerprints)
             saveFailedInstances(failedIds)
             saveTier2WaitingFps(newTier2WaitingFps)
+
+            // Update home screen widgets with the fresh filtered problem snapshot (best-effort)
+            runCatching {
+                WidgetSnapshotStore.saveAndRefreshWidgets(
+                    applicationContext, allFilteredProblems, System.currentTimeMillis(),
+                    widgetSourceTitle, widgetInstanceSummaries, instanceFailed = widgetFailCount,
+                )
+            }
 
             if (cmdSettings.debugCommandSubmission)
                 android.util.Log.d("qNag", "[service] poll finished, next delay ${effectiveIntervalS}s")
@@ -507,6 +533,9 @@ class NagiosMonitoringService : Service() {
             .setContentIntent(tapIntent)
             .setOngoing(true)
             .setSilent(true)
+            .setLocalOnly(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
             .build()
     }
 

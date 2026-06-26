@@ -15,8 +15,8 @@ android {
         applicationId = "com.exogroup.qnag"
         minSdk = 24
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.0.5"
+        versionCode = 6
+        versionName = "1.0.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -87,4 +87,6 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     // Background polling via WorkManager (minimum periodic interval 15 minutes on Android)
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+    // Jetpack Glance for home screen widgets
+    implementation("androidx.glance:glance-appwidget:1.1.0")
 }

@@ -22,7 +22,11 @@ import com.exogroup.qnag.data.NagiosApi
 import com.exogroup.qnag.data.NagiosInstance
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
+import com.exogroup.qnag.data.SecureInstanceStore
+import com.exogroup.qnag.data.applyFilters
 import com.exogroup.qnag.data.problemComparator
+import com.exogroup.qnag.widget.WidgetInstanceSummary
+import com.exogroup.qnag.widget.WidgetSnapshotStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -126,6 +130,16 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 val summary = buildInstanceSummary(instance, problems, now)
                 val finalProblems = if (stale != null && problemsMatchStable(problems, stale)) stale else problems
                 uiState = DashboardState.Success(finalProblems, now, instanceSummaries = listOf(summary))
+                viewModelScope.launch {
+                    runCatching {
+                        val filterSettings = SecureInstanceStore(appContext).getAppSettings().filterSettings
+                        val filtered = applyFilters(problems, filterSettings)
+                        val widgetSummary = WidgetSnapshotStore.buildInstanceSummary(instance.name, filtered)
+                        WidgetSnapshotStore.saveAndRefreshWidgets(
+                            appContext, filtered, now, instance.name, listOf(widgetSummary)
+                        )
+                    }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -190,6 +204,35 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     val finalProblems = if (stale != null && problemsMatchStable(allProblems, stale)) stale else allProblems
                     uiState = DashboardState.Success(finalProblems, now, errors, summaries)
+                    viewModelScope.launch {
+                        runCatching {
+                            val filterSettings = SecureInstanceStore(appContext).getAppSettings().filterSettings
+                            val allFiltered = mutableListOf<NagiosProblem>()
+                            val widgetSummaries = mutableListOf<WidgetInstanceSummary>()
+                            var widgetFailCount = 0
+                            // Build one summary per instance so OK instances (zero filtered problems)
+                            // appear as "OK" in the widget rather than being dropped by groupBy.
+                            instances.zip(deferreds).forEach { (inst, triple) ->
+                                if (triple.second == null) {
+                                    val filteredForInst = applyFilters(triple.first, filterSettings)
+                                    allFiltered += filteredForInst
+                                    widgetSummaries += WidgetSnapshotStore.buildInstanceSummary(inst.name, filteredForInst)
+                                } else {
+                                    widgetFailCount++
+                                    widgetSummaries += WidgetInstanceSummary(
+                                        instanceName  = inst.name,
+                                        totalProblems = 0, down = 0, unreachable = 0,
+                                        critical = 0, warning = 0, unknown = 0,
+                                        failed = true,
+                                    )
+                                }
+                            }
+                            val sourceTitle = if (instances.size == 1) instances[0].name else "All instances"
+                            WidgetSnapshotStore.saveAndRefreshWidgets(
+                                appContext, allFiltered, now, sourceTitle, widgetSummaries, instanceFailed = widgetFailCount
+                            )
+                        }
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e

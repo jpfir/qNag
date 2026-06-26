@@ -30,8 +30,10 @@ private val WATCHDOG_INTERVALS: List<Pair<Int, String>> = listOf(
  * ACK defaults, polling behaviour flags, and miscellaneous command settings.
  * All changes are emitted immediately via [onUpdate].
  *
- * @param showOnlyReliability When true, show only reliability/monitoring settings
- *   (used by the "Monitoring & Reliability" sub-screen in the settings navigation).
+ * @param showOnlyReliability When true, show only reliability/monitoring settings.
+ * @param showCommandsOnly When true, show only ACK defaults, date format, and diagnostics.
+ *   Intended for the Commands sub-screen; polling and reliability settings live on dedicated pages.
+ *   Mutually exclusive with [showOnlyReliability].
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,6 +41,7 @@ fun CommandSettingsSection(
     settings: CommandSettings,
     onUpdate: (CommandSettings) -> Unit,
     showOnlyReliability: Boolean = false,
+    showCommandsOnly: Boolean = false,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
 
@@ -79,20 +82,28 @@ fun CommandSettingsSection(
             modifier = Modifier.padding(bottom = 4.dp),
         )
 
-        Spacer(Modifier.height(4.dp))
-        CmdSubheader("Background polling")
+        // Background polling flags — only on the default / all-settings view;
+        // the dedicated Monitoring & Refresh page owns these when showCommandsOnly=true.
+        if (!showCommandsOnly) {
+            Spacer(Modifier.height(4.dp))
+            CmdSubheader("Background polling")
 
-        CmdRow("Notify on fetch/polling failure", settings.notifyOnFetchFailure) {
-            onUpdate(settings.copy(notifyOnFetchFailure = it))
-        }
-        CmdRow("Notify only new problems (suppress repeats)", settings.notifyOnlyNewProblems) {
-            onUpdate(settings.copy(notifyOnlyNewProblems = it))
-        }
-        CmdRow("Show battery optimization hint", settings.showBatteryOptimizationHint) {
-            onUpdate(settings.copy(showBatteryOptimizationHint = it))
+            CmdRow("Notify on fetch/polling failure", settings.notifyOnFetchFailure) {
+                onUpdate(settings.copy(notifyOnFetchFailure = it))
+            }
+            CmdRow("Notify only new problems (suppress repeats)", settings.notifyOnlyNewProblems) {
+                onUpdate(settings.copy(notifyOnlyNewProblems = it))
+            }
+            CmdRow("Show battery optimization hint", settings.showBatteryOptimizationHint) {
+                onUpdate(settings.copy(showBatteryOptimizationHint = it))
+            }
         }
 
         } // end if (!showOnlyReliability)
+
+        // Reliability and stale-alert sections are owned by the Reliability / Monitoring &
+        // Refresh dedicated pages when showCommandsOnly=true — skip them here.
+        if (!showCommandsOnly) {
 
         Spacer(Modifier.height(4.dp))
         CmdSubheader("Reliability mode")
@@ -171,6 +182,8 @@ fun CommandSettingsSection(
             }
         }
 
+        } // end if (!showCommandsOnly)
+
         Spacer(Modifier.height(4.dp))
         CmdSubheader("Nagios date format (for recheck start_time)")
 
@@ -204,7 +217,7 @@ fun CommandSettingsSection(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NagiosDateFormatPicker(
+internal fun NagiosDateFormatPicker(
     current: NagiosDateFormat,
     onSelect: (NagiosDateFormat) -> Unit,
 ) {
@@ -236,7 +249,7 @@ private fun NagiosDateFormatPicker(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ForegroundIntervalPicker(
+internal fun ForegroundIntervalPicker(
     currentSeconds: Int,
     onSelect: (Int) -> Unit,
 ) {
@@ -269,7 +282,7 @@ private fun ForegroundIntervalPicker(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun WatchdogIntervalPicker(
+internal fun WatchdogIntervalPicker(
     currentMinutes: Int,
     onSelect: (Int) -> Unit,
 ) {
@@ -301,7 +314,7 @@ private fun WatchdogIntervalPicker(
 }
 
 @Composable
-private fun CmdSubheader(text: String) {
+internal fun CmdSubheader(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.labelMedium,
@@ -311,7 +324,7 @@ private fun CmdSubheader(text: String) {
 }
 
 @Composable
-private fun CmdRow(
+internal fun CmdRow(
     label: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,

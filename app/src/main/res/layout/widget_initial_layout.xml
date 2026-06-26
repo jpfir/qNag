@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Minimal initial layout shown by the AppWidget framework while Glance is generating
+    the first RemoteViews render.  Glance replaces this almost immediately on first update.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1A1D27">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:text="qNag"
+        android:textColor="#FFFFFFFF"
+        android:textSize="12sp" />
+
+</FrameLayout>

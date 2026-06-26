@@ -78,9 +78,7 @@ object AlertSoundController {
         failedInstanceNames: List<String> = emptyList(),
         settings: NotificationSettings,
         debug: Boolean = false,
-    ) {
-        if (settings.alertSoundMode == AlertSoundMode.NOTIFICATION_CHANNEL_ONLY) return
-
+    ): Boolean {
         val currentSeverity = computeWorstSeverity(allCurrentProblems, failedInstanceNames.size)
 
         // Build fingerprint set: problems (with status) + fetch failures
@@ -117,14 +115,21 @@ object AlertSoundController {
             "shouldPlay=$shouldPlay mode=${settings.alertSoundMode} " +
             "cooldown=${settings.globalSoundCooldownSeconds}s")
 
-        AlertSoundPlayer.playIfNeeded(context, shouldPlay, settings, debug)
+        // In NOTIFICATION_CHANNEL_ONLY mode, skip in-app audio but still evaluate the
+        // alert decision so callers (e.g. the foreground service) know whether to pulse
+        // the wearable via the notification channel.
+        if (settings.alertSoundMode != AlertSoundMode.NOTIFICATION_CHANNEL_ONLY) {
+            AlertSoundPlayer.playIfNeeded(context, shouldPlay, settings, debug)
+        }
 
-        // Persist new state
+        // Persist new state (always, regardless of sound mode, so fingerprints stay current)
         prefs.edit()
             .putInt(KEY_SEVERITY, currentSeverity)
             .putString(KEY_FINGERPRINTS, currentFps.joinToString(","))
             .also { if (shouldPlay) it.putLong(KEY_LAST_SOUND, System.currentTimeMillis()) }
             .apply()
+
+        return shouldPlay
     }
 
     /**

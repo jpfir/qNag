@@ -76,4 +76,11 @@ data class NotificationSettings(
     // Prevents looping/long alarm tones from ringing indefinitely.
     // Clamped to 1..60 at play time; stored as-is.
     val maxAlertSoundSeconds: Int = 10,
+
+    // ── Wearable & lock screen ────────────────────────────────────────────────
+    // Controls how much detail appears in wearable-forwarded notifications.
+    val wearableNotifDetail: WearableNotifDetail = WearableNotifDetail.TOP_PROBLEM_PLUS_SUMMARY,
+    // When true, host/service names are omitted from notification text intended for
+    // lock screen and wearable display — only counts are shown.
+    val hideDetailsOnLockScreen: Boolean = false,
 )

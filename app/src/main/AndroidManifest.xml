@@ -90,6 +90,30 @@
             </intent-filter>
         </receiver>
 
+        <!-- Compact status widget (2×1+): shows DOWN/CRIT/WARN/UNK counts and last-updated time. -->
+        <receiver
+            android:name=".widget.CompactStatusWidgetReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_compact_info" />
+        </receiver>
+
+        <!-- Problem list widget (4×2+): shows top problems with host/service/status rows. -->
+        <receiver
+            android:name=".widget.ProblemListWidgetReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_problem_list_info" />
+        </receiver>
+
     </application>
 
 </manifest>

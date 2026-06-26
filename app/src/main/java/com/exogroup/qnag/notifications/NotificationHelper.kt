@@ -45,8 +45,8 @@ fun deriveVisualState(
     hostDown: Int, hostUnr: Int, svcCrit: Int, svcWarn: Int, svcUnk: Int,
     failedCount: Int,
 ): NotificationVisualState = when {
-    hostDown > 0 || svcCrit > 0 || hostUnr > 0 -> NotificationVisualState.CRITICAL
     failedCount > 0                              -> NotificationVisualState.FETCH_FAILURE
+    hostDown > 0 || svcCrit > 0 || hostUnr > 0 -> NotificationVisualState.CRITICAL
     svcWarn  > 0                                 -> NotificationVisualState.WARNING
     svcUnk   > 0                                 -> NotificationVisualState.UNKNOWN
     else                                         -> NotificationVisualState.OK
@@ -104,6 +104,10 @@ object NotificationHelper {
     const val ALERT_SUMMARY_NOTIF_ID = 9002
     const val STALE_NOTIF_ID = 9003
     const val NAGIOS_ALERT_NOTIF_ID = 9004
+    const val QNAG_REFRESH_FAILURE_NOTIF_ID = 9005
+
+    private const val REFRESH_FAILURE_PREFS = "qnag_refresh_failure_state"
+    private const val REFRESH_FAILURE_COOLDOWN_MS = 15 * 60 * 1_000L
 
     // When ≥ this many new problems of the same state arrive in one poll cycle,
     // collapse them into a single summary notification to prevent a sound storm.
@@ -385,6 +389,52 @@ object NotificationHelper {
         NotificationManagerCompat.from(context).cancel(STALE_NOTIF_ID)
     }
 
+    // ── qNag refresh failure notification ──────────────────────────────────────
+
+    /**
+     * Post or update the qNag refresh failure notification.
+     *
+     * Posted when one or more Nagios instances fail to refresh.
+     * Uses a 15-minute cooldown so it alerts on first failure and subsequent worsening,
+     * but does not spam on every poll cycle.
+     */
+    @SuppressLint("MissingPermission")
+    fun notifyRefreshFailure(context: Context, failedCount: Int, totalCount: Int) {
+        if (!hasPermission(context)) return
+        val prefs = context.getSharedPreferences(REFRESH_FAILURE_PREFS, Context.MODE_PRIVATE)
+        val lastNotified = prefs.getLong("last_notified_ms", 0L)
+        val prevFailed   = prefs.getInt("prev_failed_count", 0)
+        val now = System.currentTimeMillis()
+        val shouldAlert = (now - lastNotified) > REFRESH_FAILURE_COOLDOWN_MS || failedCount > prevFailed
+        if (shouldAlert) {
+            prefs.edit().putLong("last_notified_ms", now).putInt("prev_failed_count", failedCount).apply()
+        }
+        val title = "qNag refresh failure"
+        val text  = if (failedCount >= totalCount && totalCount > 0)
+            "All $totalCount instances failed to update"
+        else
+            "$failedCount of $totalCount instances failed to update"
+        val notif = NotificationCompat.Builder(context, CHANNEL_FETCH_FAIL)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setColor(visualStateColor(NotificationVisualState.FETCH_FAILURE))
+            .setLargeIcon(NotificationIconHelper.largeIcon(NotificationVisualState.FETCH_FAILURE))
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(mainActivityIntent(context))
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(!shouldAlert)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        NotificationManagerCompat.from(context).notify(QNAG_REFRESH_FAILURE_NOTIF_ID, notif)
+    }
+
+    fun cancelRefreshFailure(context: Context) {
+        NotificationManagerCompat.from(context).cancel(QNAG_REFRESH_FAILURE_NOTIF_ID)
+        context.getSharedPreferences(REFRESH_FAILURE_PREFS, Context.MODE_PRIVATE)
+            .edit().remove("last_notified_ms").remove("prev_failed_count").apply()
+    }
+
     private fun buildSummaryTitle(
         hostDown: Int, hostUnr: Int, svcCrit: Int, svcWarn: Int, svcUnk: Int, failedCount: Int,
     ): String {
@@ -480,26 +530,38 @@ object NotificationHelper {
 
             val soundAllowed = globalSoundBudget && channelSoundOk
 
+            val hideDetails = settings.hideDetailsOnLockScreen
             if (group.size >= SUMMARY_THRESHOLD) {
-                val instances = group.map { it.instanceName }.filter { it.isNotEmpty() }.distinct()
-                val where = when {
-                    instances.size == 1 -> " in ${instances[0]}"
-                    instances.size > 1 -> " across ${instances.size} instances"
-                    else -> ""
-                }
+                val label = channelLabel(channel)
                 val summaryId = ((channel.hashCode().toLong() and 0xFFFFFFFFL) xor 0x80000000L).toInt()
+                val groupTitle: String
+                val groupText: String
+                if (hideDetails) {
+                    groupTitle = "qNag alert"
+                    groupText = "${group.size} ${label} problem${if (group.size != 1) "s" else ""}"
+                } else {
+                    val instances = group.map { it.instanceName }.filter { it.isNotEmpty() }.distinct()
+                    val where = when {
+                        instances.size == 1 -> " in ${instances[0]}"
+                        instances.size > 1  -> " across ${instances.size} instances"
+                        else -> ""
+                    }
+                    groupTitle = "${group.size} ${label} problems$where"
+                    groupText  = "Tap to open qNag"
+                }
                 val builder = NotificationCompat.Builder(context, channel)
                     .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                    .setContentTitle("${group.size} ${channelLabel(channel)} problems$where")
-                    .setContentText("Tap to open qNag")
+                    .setContentTitle(groupTitle)
+                    .setContentText(groupText)
                     .setContentIntent(mainActivityIntent(context))
+                    .setVisibility(if (hideDetails) NotificationCompat.VISIBILITY_PRIVATE else NotificationCompat.VISIBILITY_PUBLIC)
                     .setAutoCancel(true)
                     .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 if (!soundAllowed) builder.setSilent(true)
                 mgr.notify(summaryId, builder.build())
             } else {
                 group.forEachIndexed { i, ptn ->
-                    val builder = buildProblemNotif(context, channel, ptn.instanceName, ptn.problem)
+                    val builder = buildProblemNotif(context, channel, ptn.instanceName, ptn.problem, hideDetails)
                     if (!soundAllowed || i > 0) builder.setSilent(true)
                     mgr.notify(notificationId(ptn.instanceId, ptn.problem), builder.build())
                 }
@@ -517,11 +579,18 @@ object NotificationHelper {
 
     /** Single-problem notification (legacy / immediate post from ViewModel refresh). */
     @SuppressLint("MissingPermission")
-    fun notifyProblem(context: Context, instanceId: String, instanceName: String, problem: NagiosProblem) {
+    fun notifyProblem(
+        context: Context,
+        instanceId: String,
+        instanceName: String,
+        problem: NagiosProblem,
+        settings: NotificationSettings? = null,
+    ) {
         if (!hasPermission(context)) return
         val channel = channelForProblem(problem)
+        val hideDetails = settings?.hideDetailsOnLockScreen == true
         NotificationManagerCompat.from(context)
-            .notify(notificationId(instanceId, problem), buildProblemNotif(context, channel, instanceName, problem).build())
+            .notify(notificationId(instanceId, problem), buildProblemNotif(context, channel, instanceName, problem, hideDetails).build())
     }
 
     @SuppressLint("MissingPermission")
@@ -563,6 +632,9 @@ object NotificationHelper {
         newProblems: List<ProblemToNotify>,
         failedInstances: List<String>,
         visualState: NotificationVisualState,
+        sourceTitle: String = "All instances",
+        instanceTotal: Int = 0,
+        notifSettings: com.exogroup.qnag.data.NotificationSettings? = null,
     ) {
         if (!hasPermission(context)) return
 
@@ -584,16 +656,54 @@ object NotificationHelper {
         val shouldReAlert = newProblems.isNotEmpty() || currentWorst > prevWorst || prevWorst < 0
         saveAlertNotifSeverity(context, currentWorst)
 
-        val (title, bodyLines) = buildSummaryContent(allProblems, failedInstances)
-        val body = bodyLines.joinToString("\n")
+        // Build compact summary for watch-friendly one-line text
+        val effectiveTotal = if (instanceTotal > 0) instanceTotal else
+            allProblems.map { it.instanceId }.distinct().size + failedInstances.size
+        val summary = buildCompactSummaryFromProblems(
+            sourceTitle, allProblems, failedInstances, effectiveTotal,
+            lastUpdated = System.currentTimeMillis(),
+        )
+
+        val hideDetails = notifSettings?.hideDetailsOnLockScreen == true
+        val wearableDetail = notifSettings?.wearableNotifDetail
+            ?: com.exogroup.qnag.data.WearableNotifDetail.TOP_PROBLEM_PLUS_SUMMARY
+
+        // Title: "qNag FAILURE" or "qNag · {sourceTitle}"
+        val notifTitle = when {
+            summary.isFullFailure || summary.isPartialFailure -> "qNag FAILURE"
+            else -> "qNag  ·  $sourceTitle"
+        }
+        // ContentText: compact one-liner for watch
+        val contentText = summary.toOneLineText()
+        // BigText: top problem + summary (wearable detail setting)
+        val bigText = when {
+            hideDetails -> summary.toBigText()
+            wearableDetail == com.exogroup.qnag.data.WearableNotifDetail.TOP_PROBLEMS_LIST -> buildString {
+                appendLine(summary.toBigText())
+                if (summary.topProblems.isNotEmpty()) {
+                    appendLine()
+                    appendLine("Open problems:")
+                    summary.topProblems.forEach { p -> appendLine(p.toWatchLine()) }
+                }
+            }.trimEnd()
+            wearableDetail == com.exogroup.qnag.data.WearableNotifDetail.TOP_PROBLEM_PLUS_SUMMARY -> buildString {
+                summary.topProblems.firstOrNull()?.let { appendLine(it.toWatchLine()) }
+                appendLine(summary.toOneLineText())
+                val time = summary.lastUpdated?.let {
+                    java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(it))
+                }
+                if (time != null) append("Updated $time")
+            }.trimEnd()
+            else -> summary.toOneLineText()  // COMPACT_SUMMARY
+        }
 
         val notif = NotificationCompat.Builder(context, CHANNEL_NAGIOS_ALERTS)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setColor(visualStateColor(visualState))
             .setLargeIcon(NotificationIconHelper.largeIcon(visualState))
-            .setContentTitle(title)
-            .setContentText(bodyLines.firstOrNull() ?: body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentTitle(notifTitle)
+            .setContentText(contentText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
             .setContentIntent(mainActivityIntent(context))
             .setOngoing(false)
             .setAutoCancel(false)
@@ -603,6 +713,74 @@ object NotificationHelper {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setVibrate(longArrayOf(0, 300, 200, 300))
             .setOnlyAlertOnce(!shouldReAlert)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(NAGIOS_ALERT_NOTIF_ID, notif)
+    }
+
+    /**
+     * Post a transient wearable alert pulse using [NAGIOS_ALERT_NOTIF_ID].
+     *
+     * Only call when [AlertSoundController.evaluateAndPlay] returns true — the caller owns
+     * the alert-worthy decision. The notification auto-cancels after 8 s so the shade does
+     * not retain a duplicate long-lived qNag notification.
+     */
+    @SuppressLint("MissingPermission")
+    fun postWearableAlertPulse(
+        context: Context,
+        summary: CompactMonitoringSummary,
+        visualState: NotificationVisualState,
+        settings: NotificationSettings,
+    ) {
+        if (!hasPermission(context)) return
+
+        val hideDetails = settings.hideDetailsOnLockScreen
+        val wearableDetail = settings.wearableNotifDetail
+
+        val notifTitle = when {
+            summary.isFullFailure || summary.isPartialFailure -> "qNag FAILURE"
+            hideDetails -> "qNag alert"
+            else -> "qNag  ·  ${summary.sourceTitle}"
+        }
+        val contentText = summary.toOneLineText()
+        val bigText = when {
+            hideDetails -> summary.toBigText()
+            wearableDetail == com.exogroup.qnag.data.WearableNotifDetail.TOP_PROBLEMS_LIST -> buildString {
+                appendLine(summary.toBigText())
+                if (summary.topProblems.isNotEmpty()) {
+                    appendLine()
+                    appendLine("Open problems:")
+                    summary.topProblems.forEach { p -> appendLine(p.toWatchLine()) }
+                }
+            }.trimEnd()
+            wearableDetail == com.exogroup.qnag.data.WearableNotifDetail.TOP_PROBLEM_PLUS_SUMMARY -> buildString {
+                summary.topProblems.firstOrNull()?.let { appendLine(it.toWatchLine()) }
+                appendLine(summary.toOneLineText())
+                val time = summary.lastUpdated?.let {
+                    java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(it))
+                }
+                if (time != null) append("Updated $time")
+            }.trimEnd()
+            else -> summary.toOneLineText()
+        }
+
+        val notif = NotificationCompat.Builder(context, CHANNEL_NAGIOS_ALERTS)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setColor(visualStateColor(visualState))
+            .setLargeIcon(NotificationIconHelper.largeIcon(visualState))
+            .setContentTitle(notifTitle)
+            .setContentText(contentText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
+            .setContentIntent(mainActivityIntent(context))
+            .setOngoing(false)
+            .setAutoCancel(true)
+            .setTimeoutAfter(8_000L)
+            .setLocalOnly(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVibrate(longArrayOf(0, 300, 200, 300))
+            .setOnlyAlertOnce(false)
             .build()
 
         NotificationManagerCompat.from(context).notify(NAGIOS_ALERT_NOTIF_ID, notif)
@@ -650,22 +828,45 @@ object NotificationHelper {
         channel: String,
         instanceName: String,
         problem: NagiosProblem,
+        hideDetails: Boolean = false,
     ): NotificationCompat.Builder {
         val statusLabel = notificationStatusLabel(problem)
-        val title = when (problem) {
-            is NagiosProblem.ServiceProblem -> "$statusLabel: ${problem.hostName} / ${problem.serviceName}"
-            is NagiosProblem.HostProblem -> "$statusLabel: ${problem.hostName}"
+        val title = if (hideDetails) "qNag alert" else when (problem) {
+            is NagiosProblem.ServiceProblem -> "$statusLabel ${problem.hostName} / ${problem.serviceName}"
+            is NagiosProblem.HostProblem    -> "$statusLabel ${problem.hostName}"
         }
-        val text = buildString {
-            if (instanceName.isNotEmpty()) append("[$instanceName] ")
-            append(problem.pluginOutput.take(240))
+        val text = if (hideDetails) {
+            val label = when {
+                problem is NagiosProblem.HostProblem && problem.status == NagiosStatus.HOST_DOWN -> "host DOWN problem"
+                problem is NagiosProblem.HostProblem -> "host UNREACHABLE problem"
+                problem is NagiosProblem.ServiceProblem && problem.status == NagiosStatus.SERVICE_CRITICAL -> "critical service problem"
+                problem is NagiosProblem.ServiceProblem && problem.status == NagiosStatus.SERVICE_WARNING -> "warning service problem"
+                else -> "service problem"
+            }
+            "1 $label"
+        } else {
+            buildString {
+                if (instanceName.isNotEmpty()) append("[$instanceName] ")
+                append(problem.pluginOutput.take(240))
+            }
+        }
+        val visualState = when {
+            problem is NagiosProblem.HostProblem && problem.status == NagiosStatus.HOST_DOWN -> NotificationVisualState.CRITICAL
+            problem is NagiosProblem.ServiceProblem && problem.status == NagiosStatus.SERVICE_CRITICAL -> NotificationVisualState.CRITICAL
+            problem is NagiosProblem.HostProblem && problem.status == NagiosStatus.HOST_UNREACHABLE -> NotificationVisualState.CRITICAL
+            problem is NagiosProblem.ServiceProblem && problem.status == NagiosStatus.SERVICE_WARNING -> NotificationVisualState.WARNING
+            problem is NagiosProblem.ServiceProblem && problem.status == NagiosStatus.SERVICE_UNKNOWN -> NotificationVisualState.UNKNOWN
+            else -> NotificationVisualState.WARNING
         }
         return NotificationCompat.Builder(context, channel)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setColor(visualStateColor(visualState))
+            .setLargeIcon(NotificationIconHelper.largeIcon(visualState))
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(mainActivityIntent(context))
+            .setVisibility(if (hideDetails) NotificationCompat.VISIBILITY_PRIVATE else NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
     }

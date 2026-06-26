@@ -1,10 +1,14 @@
 package com.exogroup.qnag.ui
 
-import android.util.Log
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,19 +20,25 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ProblemCard(
     problem: NagiosProblem,
@@ -61,25 +71,25 @@ fun ProblemCard(
     onRecheck: () -> Unit,
 ) {
     var isExpanded by remember { mutableStateOf(false) }
-    // One-shot swipe lock: prevents the same gesture from firing onAck/onRecheck multiple times.
-    // confirmValueChange can be called repeatedly during a single gesture, so we gate on this flag
-    // and reset it after a short delay (long enough for the gesture to fully settle).
-    var swipeLocked by remember { mutableStateOf(false) }
-    LaunchedEffect(swipeLocked) {
-        if (swipeLocked) {
-            delay(1_000L)
-            swipeLocked = false
+    var commandLocked by remember { mutableStateOf(false) }
+    var gestureAllowed by remember { mutableStateOf(false) }
+    var isDragging by remember { mutableStateOf(false) }
+    var dragOffsetPx by remember { mutableFloatStateOf(0f) }
+    val offsetAnim = remember { Animatable(0f) }
+
+    // During drag show the raw unthrottled position; during return animation show the animated value.
+    val visualOffset = if (isDragging) dragOffsetPx else offsetAnim.value
+
+    // Reset stale swipe state when the card identity or selection mode changes.
+    // Guards against the card remaining offset or locked after a list refresh or mode toggle.
+    val problemKey = "${problem.uniqueId}|${problem.instanceId}"
+    LaunchedEffect(problemKey, isSelectionMode) {
+        if (!isDragging) {
+            dragOffsetPx = 0f
+            gestureAllowed = false
+            commandLocked = false
+            offsetAnim.snapTo(0f)
         }
-    }
-
-    // Latch swipeAllowed at gesture start so a transient isScrollInProgress flip mid-swipe cannot
-    // retroactively block a gesture that began while swiping was permitted.
-    // null = no gesture in progress; non-null = the permission captured when the gesture started.
-    var gestureSwipeAllowed by remember { mutableStateOf<Boolean?>(null) }
-
-    val problemLogLabel = when (problem) {
-        is NagiosProblem.ServiceProblem -> "${problem.hostName}/${problem.serviceName}"
-        is NagiosProblem.HostProblem -> problem.hostName
     }
 
     val (rawContainerColor, contentColor) = problemColors(problem)
@@ -89,64 +99,97 @@ fun ProblemCard(
         else -> rawContainerColor
     }
 
-    val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            val effectiveAllowed = gestureSwipeAllowed ?: swipeAllowed
-            if (!effectiveAllowed || swipeLocked) {
-                return@rememberSwipeToDismissBoxState false
-            }
-            when (value) {
-                SwipeToDismissBoxValue.EndToStart -> {
-                    swipeLocked = true; onAck(); false
-                }
-                SwipeToDismissBoxValue.StartToEnd -> {
-                    swipeLocked = true; onRecheck(); false
-                }
-                else -> false
-            }
-        },
-        positionalThreshold = { totalDistance -> totalDistance * 0.80f },
-    )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val density = LocalDensity.current
+        val widthPx = with(density) { maxWidth.toPx() }
+        val thresholdPx = widthPx * 0.45f
+        val maxSwipePx = widthPx * 0.55f
 
-    // Latch gestureSwipeAllowed when the drag starts; clear it when the card settles back.
-    val isBeingDragged = dismissState.dismissDirection != SwipeToDismissBoxValue.Settled
-    LaunchedEffect(isBeingDragged) {
-        if (isBeingDragged) gestureSwipeAllowed = swipeAllowed
-        else gestureSwipeAllowed = null
-    }
+        val draggableState = rememberDraggableState { delta ->
+            if (!gestureAllowed) return@rememberDraggableState
+            dragOffsetPx = (dragOffsetPx + delta).coerceIn(-maxSwipePx, maxSwipePx)
+        }
 
-    SwipeToDismissBox(
-        state = dismissState,
-        backgroundContent = {
-            val bgColor = when (dismissState.dismissDirection) {
-                SwipeToDismissBoxValue.StartToEnd -> Color(0xFF1976D2)   // blue = recheck
-                SwipeToDismissBoxValue.EndToStart -> Color(0xFF388E3C)   // green = ack
-                else -> Color.Transparent
-            }
+        val progress = (abs(visualOffset) / thresholdPx).coerceIn(0f, 1f)
+        val backgroundColor = when {
+            visualOffset > 0f -> Color(0xFF1976D2).copy(alpha = 0.25f + progress * 0.75f)
+            visualOffset < 0f -> Color(0xFF388E3C).copy(alpha = 0.25f + progress * 0.75f)
+            else -> Color.Transparent
+        }
+
+        Box(modifier = Modifier.fillMaxWidth()) {
+            // Swipe command background — reveals action colour and icon behind the sliding card
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .matchParentSize()
                     .padding(vertical = 4.dp)
-                    .background(bgColor, shape = CardDefaults.shape),
-                contentAlignment = when (dismissState.dismissDirection) {
-                    SwipeToDismissBoxValue.StartToEnd -> Alignment.CenterStart
-                    else -> Alignment.CenterEnd
-                }
+                    .background(backgroundColor, shape = CardDefaults.shape),
+                contentAlignment = if (visualOffset > 0f) Alignment.CenterStart else Alignment.CenterEnd,
             ) {
-                when (dismissState.dismissDirection) {
-                    SwipeToDismissBoxValue.StartToEnd ->
-                        Icon(Icons.Default.Refresh, "Recheck", tint = Color.White, modifier = Modifier.padding(start = 24.dp))
-                    SwipeToDismissBoxValue.EndToStart ->
-                        Icon(Icons.Default.Check, "Acknowledge", tint = Color.White, modifier = Modifier.padding(end = 24.dp))
-                    else -> {}
+                when {
+                    visualOffset > 0f -> Icon(
+                        Icons.Default.Refresh, contentDescription = "Recheck",
+                        tint = Color.White,
+                        modifier = Modifier.padding(start = 24.dp),
+                    )
+                    visualOffset < 0f -> Icon(
+                        Icons.Default.Check, contentDescription = "Acknowledge",
+                        tint = Color.White,
+                        modifier = Modifier.padding(end = 24.dp),
+                    )
                 }
             }
-        },
-        content = {
+
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 4.dp)
+                    .offset { IntOffset(visualOffset.roundToInt(), 0) }
+                    .draggable(
+                        state = draggableState,
+                        orientation = Orientation.Horizontal,
+                        enabled = !isSelectionMode,
+                        onDragStarted = {
+                            gestureAllowed = swipeAllowed && !isSelectionMode && !commandLocked
+                            isDragging = gestureAllowed
+                        },
+                        onDragStopped = {
+                            val finalOffset = dragOffsetPx
+                            val action = when {
+                                gestureAllowed && !commandLocked && abs(finalOffset) >= thresholdPx && finalOffset > 0f -> "recheck"
+                                gestureAllowed && !commandLocked && abs(finalOffset) >= thresholdPx && finalOffset < 0f -> "ack"
+                                else -> null
+                            }
+                            val shouldLock = action != null
+                            if (shouldLock) commandLocked = true
+
+                            try {
+                                // Sync animation to drag position before clearing isDragging — no visual jump.
+                                offsetAnim.snapTo(finalOffset)
+                                isDragging = false
+                                dragOffsetPx = 0f
+                                gestureAllowed = false
+
+                                // Fire command immediately and safely; failures surface via Command Activity.
+                                if (action == "recheck") runCatching { onRecheck() }
+                                else if (action == "ack") runCatching { onAck() }
+
+                                offsetAnim.animateTo(0f, animationSpec = tween(durationMillis = 180))
+
+                                if (shouldLock) {
+                                    delay(120L)
+                                    commandLocked = false
+                                }
+                            } finally {
+                                // Runs on cancellation (e.g. card leaves composition mid-animation).
+                                isDragging = false
+                                dragOffsetPx = 0f
+                                gestureAllowed = false
+                                if (shouldLock) commandLocked = false
+                                withContext(NonCancellable) { offsetAnim.snapTo(0f) }
+                            }
+                        },
+                    )
                     .combinedClickable(
                         onClick = {
                             if (isSelectionMode) onToggleSelect()
@@ -181,7 +224,7 @@ fun ProblemCard(
                 )
             }
         }
-    )
+    }
 }
 
 @Composable

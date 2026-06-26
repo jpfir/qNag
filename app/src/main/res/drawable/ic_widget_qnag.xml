@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <!-- Monitoring signal bars — varying heights, left to right -->
+  <path
+      android:fillColor="#FFFFFF"
+      android:pathData="M1,18L3,18L3,12L1,12L1,18Z M5,18L7,18L7,9L5,9L5,18Z M9,18L11,18L11,14L9,14L9,18Z M13,18L15,18L15,6L13,6L13,18Z M17,18L19,18L19,11L17,11L17,18Z M21,18L23,18L23,3L21,3L21,18Z"/>
+</vector>

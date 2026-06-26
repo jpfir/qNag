@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.exogroup.qnag.data.AlertSoundMode
 import com.exogroup.qnag.data.NotificationMode
 import com.exogroup.qnag.data.NotificationSettings
+import com.exogroup.qnag.data.WearableNotifDetail
 import com.exogroup.qnag.notifications.NotificationHelper
 import com.exogroup.qnag.sound.AlertSoundPlayer
 
@@ -505,6 +506,47 @@ fun NotificationSettingsSection(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
+
+                // ── Wearable & lock screen ───────────────────────────────────────────────
+                Spacer(Modifier.height(8.dp))
+                NotifSubheader("Wearable & lock screen")
+                Text(
+                    "Controls what appears in Samsung Fit / wearable and lock screen notifications.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text("Wearable notification detail", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(2.dp))
+                listOf(
+                    WearableNotifDetail.COMPACT_SUMMARY          to "Compact summary (counts only)",
+                    WearableNotifDetail.TOP_PROBLEM_PLUS_SUMMARY to "Top problem + summary (recommended)",
+                    WearableNotifDetail.TOP_PROBLEMS_LIST        to "Top problems list",
+                ).forEach { (detail, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onUpdate(settings.copy(wearableNotifDetail = detail)) }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = settings.wearableNotifDetail == detail,
+                            onClick  = { onUpdate(settings.copy(wearableNotifDetail = detail)) },
+                        )
+                        Text(label, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                NotifRow("Hide host/service details on lock screen & wearables", settings.hideDetailsOnLockScreen) {
+                    onUpdate(settings.copy(hideDetailsOnLockScreen = it))
+                }
+                Text(
+                    "Shows only problem counts — no host/service names in notification text. " +
+                    "Failure alerts remain visible but sanitized.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 // ── Android notification channel settings (secondary / channel-only mode) ───
                 Spacer(Modifier.height(8.dp))

@@ -41,6 +41,7 @@ import com.exogroup.qnag.ui.ProblemDetailScreen
 import com.exogroup.qnag.ui.ReliabilityChecklistScreen
 import com.exogroup.qnag.ui.SettingsScreen
 import com.exogroup.qnag.ui.WelcomeScreen
+import com.exogroup.qnag.widget.WidgetRefresher
 import com.exogroup.qnag.worker.BackgroundPollingScheduler
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -167,6 +168,7 @@ class MainActivity : ComponentActivity() {
                                 store.saveInstances(merged)
                                 instances = merged
                                 applyPollingMode(appSettings, merged)
+                                WidgetRefresher.onInstancesChanged(applicationContext)
                                 pendingImportJson.value = null
                                 Toast.makeText(
                                     this@MainActivity,
@@ -253,6 +255,7 @@ class MainActivity : ComponentActivity() {
                         store.saveInstances(newInstances)
                         instances = newInstances
                         applyPollingMode(appSettings, newInstances)
+                        WidgetRefresher.onInstancesChanged(applicationContext)
                         val enabled = newInstances.filter { it.enabled }
                         val current = screen
                         when {
@@ -285,6 +288,7 @@ class MainActivity : ComponentActivity() {
                                     store.addInstance(newInstance)
                                     instances = store.getInstances()
                                     applyPollingMode(appSettings, instances)
+                                    WidgetRefresher.onInstancesChanged(applicationContext)
                                     screen = if (wasFirstInstance) AppScreen.ReliabilityChecklist(newInstance)
                                              else AppScreen.Dashboard(newInstance)
                                 },
@@ -304,6 +308,7 @@ class MainActivity : ComponentActivity() {
                                         store.saveInstances(updated)
                                         instances = updated
                                         applyPollingMode(appSettings, updated)
+                                        WidgetRefresher.onInstancesChanged(applicationContext)
                                         screen = AppScreen.Dashboard(updated.first { it.id == selected.id })
                                     }
                                 } else null,

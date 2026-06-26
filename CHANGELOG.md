@@ -9,6 +9,28 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ---
 
+## [1.0.6] - 2026-06-26
+
+### Added
+- **Home Screen Widgets:** Compact and Large status widgets powered by Glance (Note: Read-only in this release).
+- **Wearable Notifications:** Condensed formatting optimized for mirrored smartwatch and fitness band screens.
+- **Notification Privacy:** Option to hide sensitive host/service names on lock screens and wearables.
+- **Refresh Failure Alerts:** Explicit visual indicators when qNag fails to reach or poll an instance.
+- **Settings Search:** Find settings instantly by keyword.
+- **Command Tracking:** Real-time progress indicators for running commands (ACK, Recheck, Downtime).
+
+### Changed
+- **Settings Overhaul:** Reorganized the settings menu into dedicated, focused sub-pages.
+- **Swipe Gestures:** Rebuilt swipe-to-ACK/Recheck logic so cards no longer get visually stuck.
+- **Problem Hierarchy:** Standarized sorting across the app, widgets, and notifications to strictly prioritize DOWN / CRITICAL / UNREACHABLE.
+
+### Fixed
+- Data desync between background workers, the main app, and active notifications.
+- Problems marked NOTIF OFF in Nagios failing to trigger standard app alerts.
+
+### Notes
+Wearable support relies on standard Android notification mirroring; there is no native Wear OS app/Tile in this release.
+
 ## [1.0.5] - 2026-06-26
 
 ### Added

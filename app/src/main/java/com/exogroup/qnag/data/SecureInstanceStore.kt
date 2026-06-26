@@ -133,6 +133,7 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 notifyOnUnknownServices = o.get("notifyOnUnknownServices")?.asBoolean ?: true,
                 notifyOnDownHosts = o.get("notifyOnDownHosts")?.asBoolean ?: true,
                 notifyOnUnreachableHosts = o.get("notifyOnUnreachableHosts")?.asBoolean ?: true,
+                respectNagiosNotificationsDisabled = o.get("respectNagiosNotificationsDisabled")?.asBoolean ?: true,
                 notifyOnlyUnacknowledged = o.get("notifyOnlyUnacknowledged")?.asBoolean ?: true,
                 notifyOnlyHardState = o.get("notifyOnlyHardState")?.asBoolean ?: true,
                 respectDowntime = o.get("respectDowntime")?.asBoolean ?: true,
@@ -163,6 +164,11 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 notifyAckedAfterEnabled = o.get("notifyAckedAfterEnabled")?.asBoolean ?: false,
                 notifyAckedAfterMinutes = o.get("notifyAckedAfterMinutes")?.asInt ?: 120,
                 maxAlertSoundSeconds = o.get("maxAlertSoundSeconds")?.asInt ?: 10,
+                wearableNotifDetail = try {
+                    o.get("wearableNotifDetail")?.takeIf { !it.isJsonNull }?.asString
+                        ?.let { WearableNotifDetail.valueOf(it) }
+                } catch (_: Exception) { null } ?: WearableNotifDetail.TOP_PROBLEM_PLUS_SUMMARY,
+                hideDetailsOnLockScreen = o.get("hideDetailsOnLockScreen")?.asBoolean ?: false,
             )
         } catch (_: Exception) { NotificationSettings() }
     }
