@@ -1,5 +1,6 @@
 package com.exogroup.qnag.ui
 
+import android.util.Log
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -71,6 +72,16 @@ fun ProblemCard(
         }
     }
 
+    // Latch swipeAllowed at gesture start so a transient isScrollInProgress flip mid-swipe cannot
+    // retroactively block a gesture that began while swiping was permitted.
+    // null = no gesture in progress; non-null = the permission captured when the gesture started.
+    var gestureSwipeAllowed by remember { mutableStateOf<Boolean?>(null) }
+
+    val problemLogLabel = when (problem) {
+        is NagiosProblem.ServiceProblem -> "${problem.hostName}/${problem.serviceName}"
+        is NagiosProblem.HostProblem -> problem.hostName
+    }
+
     val (rawContainerColor, contentColor) = problemColors(problem)
     val containerColor = when {
         isSelected -> rawContainerColor.copy(alpha = 0.5f)
@@ -80,15 +91,29 @@ fun ProblemCard(
 
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
-            if (!swipeAllowed || swipeLocked) return@rememberSwipeToDismissBoxState false
+            val effectiveAllowed = gestureSwipeAllowed ?: swipeAllowed
+            if (!effectiveAllowed || swipeLocked) {
+                return@rememberSwipeToDismissBoxState false
+            }
             when (value) {
-                SwipeToDismissBoxValue.EndToStart -> { swipeLocked = true; onAck(); false }
-                SwipeToDismissBoxValue.StartToEnd -> { swipeLocked = true; onRecheck(); false }
+                SwipeToDismissBoxValue.EndToStart -> {
+                    swipeLocked = true; onAck(); false
+                }
+                SwipeToDismissBoxValue.StartToEnd -> {
+                    swipeLocked = true; onRecheck(); false
+                }
                 else -> false
             }
         },
         positionalThreshold = { totalDistance -> totalDistance * 0.80f },
     )
+
+    // Latch gestureSwipeAllowed when the drag starts; clear it when the card settles back.
+    val isBeingDragged = dismissState.dismissDirection != SwipeToDismissBoxValue.Settled
+    LaunchedEffect(isBeingDragged) {
+        if (isBeingDragged) gestureSwipeAllowed = swipeAllowed
+        else gestureSwipeAllowed = null
+    }
 
     SwipeToDismissBox(
         state = dismissState,

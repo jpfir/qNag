@@ -10,7 +10,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.exogroup.qnag.data.AckComment
 import com.exogroup.qnag.data.AckSuppressCache
+import com.exogroup.qnag.data.CommandActivityTracker
+import com.exogroup.qnag.data.CommandJobType
 import com.exogroup.qnag.data.CommandSettings
+import com.exogroup.qnag.data.CommandTargetResult
+import com.exogroup.qnag.data.CommandTargetStatus
 import com.exogroup.qnag.data.EventLog
 import com.exogroup.qnag.data.DowntimeScope
 import com.exogroup.qnag.data.InstanceSummary
@@ -26,6 +30,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 // ── Dashboard data state ──────────────────────────────────────────────────────
 
@@ -34,6 +39,7 @@ sealed class DashboardState {
     data class Loading(
         val previousProblems: List<NagiosProblem>? = null,
         val previousSummaries: List<InstanceSummary> = emptyList(),
+        val previousLastUpdated: Long? = null,
     ) : DashboardState()
     /**
      * @param partialErrors Non-empty when some instances failed in ALL mode; shown as a warning
@@ -51,6 +57,7 @@ sealed class DashboardState {
         val message: String,
         val previousProblems: List<NagiosProblem>? = null,
         val previousSummaries: List<InstanceSummary> = emptyList(),
+        val previousLastUpdated: Long? = null,
     ) : DashboardState()
 }
 
@@ -108,7 +115,8 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         lastFetchTarget = FetchTarget.Single(instance)
         val stale = currentProblems()
         val staleSummaries = currentSummaries()
-        uiState = DashboardState.Loading(stale, staleSummaries)
+        val staleLastUpdated = currentLastUpdated()
+        uiState = DashboardState.Loading(stale, staleSummaries, staleLastUpdated)
         fetchJob = viewModelScope.launch {
             try {
                 val problems = withContext(Dispatchers.IO) { api.fetchProblems(instance) }
@@ -116,7 +124,8 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 reconcileLocalAck(instance.id, problems)
                 reconcilePendingRechecks(instance.id, problems)
                 val summary = buildInstanceSummary(instance, problems, now)
-                uiState = DashboardState.Success(problems, now, instanceSummaries = listOf(summary))
+                val finalProblems = if (stale != null && problemsMatchStable(problems, stale)) stale else problems
+                uiState = DashboardState.Success(finalProblems, now, instanceSummaries = listOf(summary))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -124,7 +133,7 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                     instance, sanitizeError(e.message),
                     staleSummaries.find { it.instanceId == instance.id },
                 )
-                uiState = DashboardState.Error(e.message ?: "Unknown network error", stale, listOf(errSummary))
+                uiState = DashboardState.Error(e.message ?: "Unknown network error", stale, listOf(errSummary), staleLastUpdated)
             }
         }
     }
@@ -143,7 +152,8 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         lastFetchTarget = FetchTarget.All(instances)
         val stale = currentProblems()
         val staleSummaries = currentSummaries()
-        uiState = DashboardState.Loading(stale, staleSummaries)
+        val staleLastUpdated = currentLastUpdated()
+        uiState = DashboardState.Loading(stale, staleSummaries, staleLastUpdated)
 
         fetchJob = viewModelScope.launch {
             try {
@@ -175,14 +185,16 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                         "Failed to refresh all instances. ${errors.firstOrNull() ?: ""}",
                         stale,
                         summaries,
+                        staleLastUpdated,
                     )
                 } else {
-                    uiState = DashboardState.Success(allProblems, now, errors, summaries)
+                    val finalProblems = if (stale != null && problemsMatchStable(allProblems, stale)) stale else allProblems
+                    uiState = DashboardState.Success(finalProblems, now, errors, summaries)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                uiState = DashboardState.Error(e.message ?: "Unknown network error", stale, staleSummaries)
+                uiState = DashboardState.Error(e.message ?: "Unknown network error", stale, staleSummaries, staleLastUpdated)
             }
         }
     }
@@ -216,7 +228,7 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
     private val recentCommands = HashMap<String, Long>()
 
     private fun commandKey(kind: String, instanceId: String, problem: NagiosProblem): String =
-        "$kind$instanceId${problem.uniqueId}"
+        "$kind$instanceId${problem.uniqueId}"
 
     private fun isCommandBlocked(kind: String, instanceId: String, problem: NagiosProblem): Boolean {
         val key = commandKey(kind, instanceId, problem)
@@ -275,6 +287,29 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         return expanded.distinctBy { it.instanceId + SEP + it.uniqueId }
     }
 
+    // ── Activity tracker helpers ──────────────────────────────────────────────
+
+    private fun activityTargetId(instanceId: String, problem: NagiosProblem) =
+        "$instanceId:${problem.uniqueId}"
+
+    private fun commandTarget(
+        instanceId: String,
+        instanceName: String,
+        problem: NagiosProblem,
+    ) = CommandTargetResult(
+        id = activityTargetId(instanceId, problem),
+        instanceName = instanceName,
+        instanceId = instanceId,
+        hostName = problem.hostName,
+        serviceName = (problem as? NagiosProblem.ServiceProblem)?.serviceName,
+        status = CommandTargetStatus.PENDING,
+    )
+
+    private fun activityJobTitle(kind: String, count: Int, instanceName: String? = null): String {
+        val base = "$kind: $count target${if (count != 1) "s" else ""}"
+        return if (instanceName != null) "$base on $instanceName" else base
+    }
+
     // ── ACK ───────────────────────────────────────────────────────────────────
 
     /** Single-instance ACK with host-cascade expansion and two-layer dedup. */
@@ -299,29 +334,76 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
 
         val activeKeys = activateKeys("ack", instance.id, fresh)
         commandState = CommandState.Loading
+
+        val jobId = UUID.randomUUID().toString()
+        CommandActivityTracker.startJob(
+            jobId, CommandJobType.ACK,
+            activityJobTitle("ACK", fresh.size, instance.name),
+            fresh.map { commandTarget(instance.id, instance.name, it) },
+        )
+
         viewModelScope.launch {
+            val succeeded = mutableListOf<NagiosProblem>()
+            val failedCount = intArrayOf(0)
             try {
-                withContext(Dispatchers.IO) { api.acknowledgeProblems(instance, fresh, settings) }
-                val now = System.currentTimeMillis()
-                fresh.forEach { p ->
-                    localAcknowledgedMap[localAckKey(instance.id, p)] = LocalAckOverlay(
-                        submittedAt = now,
-                        hostName = p.hostName,
-                        serviceName = (p as? NagiosProblem.ServiceProblem)?.serviceName,
-                        instanceId = instance.id,
-                    )
+                withContext(Dispatchers.IO) {
+                    fresh.forEach { p ->
+                        val tid = activityTargetId(instance.id, p)
+                        CommandActivityTracker.markTargetRunning(jobId, tid)
+                        try {
+                            api.acknowledgeProblem(instance, p, settings)
+                            CommandActivityTracker.markTargetSucceeded(jobId, tid)
+                            succeeded.add(p)
+                        } catch (e: Exception) {
+                            CommandActivityTracker.markTargetFailed(jobId, tid, sanitizeError(e.message))
+                            failedCount[0]++
+                        }
+                    }
                 }
-                // Write to suppress cache so background polling doesn't re-notify before Nagios confirms
-                AckSuppressCache.recordAcked(
-                    appContext,
-                    fresh.map { AckSuppressCache.suppressKey(instance.id, it) }.toSet(),
-                )
-                recordCompleted("ack", instance.id, fresh)
-                val msg = buildAckMsg(fresh.size, hostCount, addedServiceCount)
-                EventLog.info(appContext, EventLog.CAT_COMMAND, "ACK submitted — ${instance.name}: $msg")
-                commandState = CommandState.Success(msg)
+                CommandActivityTracker.finishJob(jobId)
+
+                if (succeeded.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    succeeded.forEach { p ->
+                        localAcknowledgedMap[localAckKey(instance.id, p)] = LocalAckOverlay(
+                            submittedAt = now,
+                            hostName = p.hostName,
+                            serviceName = (p as? NagiosProblem.ServiceProblem)?.serviceName,
+                            instanceId = instance.id,
+                        )
+                    }
+                    AckSuppressCache.recordAcked(
+                        appContext,
+                        succeeded.map { AckSuppressCache.suppressKey(instance.id, it) }.toSet(),
+                    )
+                    recordCompleted("ack", instance.id, succeeded)
+                }
+
+                val fc = failedCount[0]
+                val sc = succeeded.size
+                val msg: String
+                val newState: CommandState
+                when {
+                    fc == 0 -> {
+                        msg = buildAckMsg(sc, hostCount, addedServiceCount)
+                        EventLog.info(appContext, EventLog.CAT_COMMAND, "ACK submitted — ${instance.name}: $msg")
+                        newState = CommandState.Success(msg)
+                    }
+                    sc == 0 -> {
+                        msg = "ACK failed for all $fc target${if (fc != 1) "s" else ""}"
+                        EventLog.error(appContext, EventLog.CAT_COMMAND, "ACK failed — ${instance.name}")
+                        newState = CommandState.Error(msg)
+                    }
+                    else -> {
+                        msg = "ACK: $sc succeeded, $fc failed"
+                        EventLog.warn(appContext, EventLog.CAT_COMMAND, "ACK partial — ${instance.name}: $msg")
+                        newState = CommandState.Warning(msg)
+                    }
+                }
+                commandState = newState
                 refreshAfterCommand()
             } catch (e: Exception) {
+                CommandActivityTracker.finishJob(jobId)
                 val err = sanitizeError(e.message)
                 EventLog.error(appContext, EventLog.CAT_COMMAND, "ACK failed — ${instance.name}: $err")
                 commandState = CommandState.Error(e.message ?: "ACK failed")
@@ -359,33 +441,82 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         grouped.forEach { (id, group) ->
             if (instanceMap.containsKey(id)) activeKeys.addAll(activateKeys("ack", id, group))
         }
-
         commandState = CommandState.Loading
+
+        val jobId = UUID.randomUUID().toString()
+        CommandActivityTracker.startJob(
+            jobId, CommandJobType.ACK,
+            activityJobTitle("ACK", fresh.size),
+            fresh.map { p ->
+                val inst = instanceMap[p.instanceId]
+                commandTarget(p.instanceId, inst?.name ?: p.instanceId, p)
+            },
+        )
+
         viewModelScope.launch {
+            val succeeded = mutableListOf<NagiosProblem>()
+            val failedCount = intArrayOf(0)
             try {
                 withContext(Dispatchers.IO) {
                     grouped.forEach { (id, group) ->
                         val instance = instanceMap[id] ?: return@forEach
-                        api.acknowledgeProblems(instance, group, settings)
+                        group.forEach { p ->
+                            val tid = activityTargetId(id, p)
+                            CommandActivityTracker.markTargetRunning(jobId, tid)
+                            try {
+                                api.acknowledgeProblem(instance, p, settings)
+                                CommandActivityTracker.markTargetSucceeded(jobId, tid)
+                                succeeded.add(p)
+                            } catch (e: Exception) {
+                                CommandActivityTracker.markTargetFailed(jobId, tid, sanitizeError(e.message))
+                                failedCount[0]++
+                            }
+                        }
                     }
                 }
-                val now = System.currentTimeMillis()
-                fresh.forEach { p ->
-                    localAcknowledgedMap[localAckKey(p.instanceId, p)] = LocalAckOverlay(
-                        submittedAt = now,
-                        hostName = p.hostName,
-                        serviceName = (p as? NagiosProblem.ServiceProblem)?.serviceName,
-                        instanceId = p.instanceId,
+                CommandActivityTracker.finishJob(jobId)
+
+                if (succeeded.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    succeeded.forEach { p ->
+                        localAcknowledgedMap[localAckKey(p.instanceId, p)] = LocalAckOverlay(
+                            submittedAt = now,
+                            hostName = p.hostName,
+                            serviceName = (p as? NagiosProblem.ServiceProblem)?.serviceName,
+                            instanceId = p.instanceId,
+                        )
+                    }
+                    AckSuppressCache.recordAcked(
+                        appContext,
+                        succeeded.map { AckSuppressCache.suppressKey(it.instanceId, it) }.toSet(),
                     )
+                    succeeded.groupBy { it.instanceId }.forEach { (id, group) ->
+                        recordCompleted("ack", id, group)
+                    }
                 }
-                AckSuppressCache.recordAcked(
-                    appContext,
-                    fresh.map { AckSuppressCache.suppressKey(it.instanceId, it) }.toSet(),
-                )
-                grouped.forEach { (id, group) -> recordCompleted("ack", id, group) }
-                commandState = CommandState.Success(buildAckMsg(fresh.size, hostCount, addedServiceCount))
+
+                val fc = failedCount[0]
+                val sc = succeeded.size
+                val msg: String
+                val newState: CommandState
+                when {
+                    fc == 0 -> {
+                        msg = buildAckMsg(sc, hostCount, addedServiceCount)
+                        newState = CommandState.Success(msg)
+                    }
+                    sc == 0 -> {
+                        msg = "ACK failed for all $fc target${if (fc != 1) "s" else ""}"
+                        newState = CommandState.Error(msg)
+                    }
+                    else -> {
+                        msg = "ACK: $sc succeeded, $fc failed"
+                        newState = CommandState.Warning(msg)
+                    }
+                }
+                commandState = newState
                 refreshAfterCommand()
             } catch (e: Exception) {
+                CommandActivityTracker.finishJob(jobId)
                 commandState = CommandState.Error(e.message ?: "ACK failed")
             } finally {
                 deactivateKeys(activeKeys)
@@ -417,18 +548,53 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         }
         val activeKeys = activateKeys("unack", instance.id, fresh)
         commandState = CommandState.Loading
+
+        val jobId = UUID.randomUUID().toString()
+        CommandActivityTracker.startJob(
+            jobId, CommandJobType.REMOVE_ACK,
+            activityJobTitle("Remove ACK", fresh.size, instance.name),
+            fresh.map { commandTarget(instance.id, instance.name, it) },
+        )
+
         viewModelScope.launch {
+            val succeeded = mutableListOf<NagiosProblem>()
+            val failedCount = intArrayOf(0)
             try {
-                withContext(Dispatchers.IO) { api.unacknowledgeProblems(instance, fresh, commandSettings) }
-                fresh.forEach { localAcknowledgedMap.remove(localAckKey(instance.id, it)) }
-                AckSuppressCache.removeKeys(
-                    appContext,
-                    fresh.map { AckSuppressCache.suppressKey(instance.id, it) }.toSet(),
-                )
-                recordCompleted("unack", instance.id, fresh)
-                commandState = CommandState.Success(unackMsg(fresh.size))
+                withContext(Dispatchers.IO) {
+                    fresh.forEach { p ->
+                        val tid = activityTargetId(instance.id, p)
+                        CommandActivityTracker.markTargetRunning(jobId, tid)
+                        try {
+                            api.unacknowledgeProblem(instance, p, commandSettings)
+                            CommandActivityTracker.markTargetSucceeded(jobId, tid)
+                            succeeded.add(p)
+                        } catch (e: Exception) {
+                            CommandActivityTracker.markTargetFailed(jobId, tid, sanitizeError(e.message))
+                            failedCount[0]++
+                        }
+                    }
+                }
+                CommandActivityTracker.finishJob(jobId)
+
+                succeeded.forEach { localAcknowledgedMap.remove(localAckKey(instance.id, it)) }
+                if (succeeded.isNotEmpty()) {
+                    AckSuppressCache.removeKeys(
+                        appContext,
+                        succeeded.map { AckSuppressCache.suppressKey(instance.id, it) }.toSet(),
+                    )
+                    recordCompleted("unack", instance.id, succeeded)
+                }
+
+                val fc = failedCount[0]
+                val sc = succeeded.size
+                commandState = when {
+                    fc == 0 -> CommandState.Success(unackMsg(sc))
+                    sc == 0 -> CommandState.Error("Remove ACK failed for all $fc target${if (fc != 1) "s" else ""}")
+                    else    -> CommandState.Warning("Remove ACK: $sc succeeded, $fc failed")
+                }
                 refreshAfterCommand()
             } catch (e: Exception) {
+                CommandActivityTracker.finishJob(jobId)
                 commandState = CommandState.Error(sanitizeError(e.message))
             } finally {
                 deactivateKeys(activeKeys)
@@ -463,23 +629,61 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
             if (instanceMap.containsKey(id)) activeKeys.addAll(activateKeys("unack", id, group))
         }
         commandState = CommandState.Loading
+
+        val jobId = UUID.randomUUID().toString()
+        CommandActivityTracker.startJob(
+            jobId, CommandJobType.REMOVE_ACK,
+            activityJobTitle("Remove ACK", fresh.size),
+            fresh.map { p ->
+                val inst = instanceMap[p.instanceId]
+                commandTarget(p.instanceId, inst?.name ?: p.instanceId, p)
+            },
+        )
+
         viewModelScope.launch {
+            val succeeded = mutableListOf<NagiosProblem>()
+            val failedCount = intArrayOf(0)
             try {
                 withContext(Dispatchers.IO) {
                     grouped.forEach { (id, group) ->
                         val instance = instanceMap[id] ?: return@forEach
-                        api.unacknowledgeProblems(instance, group, commandSettings)
+                        group.forEach { p ->
+                            val tid = activityTargetId(id, p)
+                            CommandActivityTracker.markTargetRunning(jobId, tid)
+                            try {
+                                api.unacknowledgeProblem(instance, p, commandSettings)
+                                CommandActivityTracker.markTargetSucceeded(jobId, tid)
+                                succeeded.add(p)
+                            } catch (e: Exception) {
+                                CommandActivityTracker.markTargetFailed(jobId, tid, sanitizeError(e.message))
+                                failedCount[0]++
+                            }
+                        }
                     }
                 }
-                fresh.forEach { localAcknowledgedMap.remove(localAckKey(it.instanceId, it)) }
-                AckSuppressCache.removeKeys(
-                    appContext,
-                    fresh.map { AckSuppressCache.suppressKey(it.instanceId, it) }.toSet(),
-                )
-                grouped.forEach { (id, group) -> recordCompleted("unack", id, group) }
-                commandState = CommandState.Success(unackMsg(fresh.size))
+                CommandActivityTracker.finishJob(jobId)
+
+                succeeded.forEach { localAcknowledgedMap.remove(localAckKey(it.instanceId, it)) }
+                if (succeeded.isNotEmpty()) {
+                    AckSuppressCache.removeKeys(
+                        appContext,
+                        succeeded.map { AckSuppressCache.suppressKey(it.instanceId, it) }.toSet(),
+                    )
+                    succeeded.groupBy { it.instanceId }.forEach { (id, group) ->
+                        recordCompleted("unack", id, group)
+                    }
+                }
+
+                val fc = failedCount[0]
+                val sc = succeeded.size
+                commandState = when {
+                    fc == 0 -> CommandState.Success(unackMsg(sc))
+                    sc == 0 -> CommandState.Error("Remove ACK failed for all $fc target${if (fc != 1) "s" else ""}")
+                    else    -> CommandState.Warning("Remove ACK: $sc succeeded, $fc failed")
+                }
                 refreshAfterCommand()
             } catch (e: Exception) {
+                CommandActivityTracker.finishJob(jobId)
                 commandState = CommandState.Error(sanitizeError(e.message))
             } finally {
                 deactivateKeys(activeKeys)
@@ -509,15 +713,46 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         }
         val activeKeys = activateKeys(kind, instance.id, fresh)
         commandState = CommandState.Loading
+
+        val jobId = UUID.randomUUID().toString()
+        CommandActivityTracker.startJob(
+            jobId, CommandJobType.DOWNTIME,
+            activityJobTitle("Downtime", fresh.size, instance.name),
+            fresh.map { commandTarget(instance.id, instance.name, it) },
+        )
+
         viewModelScope.launch {
+            val succeeded = mutableListOf<NagiosProblem>()
+            val failedCount = intArrayOf(0)
             try {
                 withContext(Dispatchers.IO) {
-                    fresh.forEach { api.scheduleDowntime(instance, it, scope, durationMs, comment, commandSettings) }
+                    fresh.forEach { p ->
+                        val tid = activityTargetId(instance.id, p)
+                        CommandActivityTracker.markTargetRunning(jobId, tid)
+                        try {
+                            api.scheduleDowntime(instance, p, scope, durationMs, comment, commandSettings)
+                            CommandActivityTracker.markTargetSucceeded(jobId, tid)
+                            succeeded.add(p)
+                        } catch (e: Exception) {
+                            CommandActivityTracker.markTargetFailed(jobId, tid, sanitizeError(e.message))
+                            failedCount[0]++
+                        }
+                    }
                 }
-                recordCompleted(kind, instance.id, fresh)
-                commandState = CommandState.Success(downtimeMsg(fresh.size))
+                CommandActivityTracker.finishJob(jobId)
+
+                if (succeeded.isNotEmpty()) recordCompleted(kind, instance.id, succeeded)
+
+                val fc = failedCount[0]
+                val sc = succeeded.size
+                commandState = when {
+                    fc == 0 -> CommandState.Success(downtimeMsg(sc))
+                    sc == 0 -> CommandState.Error("Downtime failed for all $fc target${if (fc != 1) "s" else ""}")
+                    else    -> CommandState.Warning("Downtime: $sc succeeded, $fc failed")
+                }
                 refreshAfterCommand()
             } catch (e: Exception) {
+                CommandActivityTracker.finishJob(jobId)
                 commandState = CommandState.Error(sanitizeError(e.message))
             } finally {
                 deactivateKeys(activeKeys)
@@ -550,18 +785,56 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
             if (instanceMap.containsKey(id)) activeKeys.addAll(activateKeys(kind, id, group))
         }
         commandState = CommandState.Loading
+
+        val jobId = UUID.randomUUID().toString()
+        CommandActivityTracker.startJob(
+            jobId, CommandJobType.DOWNTIME,
+            activityJobTitle("Downtime", fresh.size),
+            fresh.map { p ->
+                val inst = instanceMap[p.instanceId]
+                commandTarget(p.instanceId, inst?.name ?: p.instanceId, p)
+            },
+        )
+
         viewModelScope.launch {
+            val succeeded = mutableListOf<NagiosProblem>()
+            val failedCount = intArrayOf(0)
             try {
                 withContext(Dispatchers.IO) {
                     grouped.forEach { (id, group) ->
                         val instance = instanceMap[id] ?: return@forEach
-                        group.forEach { api.scheduleDowntime(instance, it, scope, durationMs, comment, commandSettings) }
+                        group.forEach { p ->
+                            val tid = activityTargetId(id, p)
+                            CommandActivityTracker.markTargetRunning(jobId, tid)
+                            try {
+                                api.scheduleDowntime(instance, p, scope, durationMs, comment, commandSettings)
+                                CommandActivityTracker.markTargetSucceeded(jobId, tid)
+                                succeeded.add(p)
+                            } catch (e: Exception) {
+                                CommandActivityTracker.markTargetFailed(jobId, tid, sanitizeError(e.message))
+                                failedCount[0]++
+                            }
+                        }
                     }
                 }
-                grouped.forEach { (id, group) -> recordCompleted(kind, id, group) }
-                commandState = CommandState.Success(downtimeMsg(fresh.size))
+                CommandActivityTracker.finishJob(jobId)
+
+                if (succeeded.isNotEmpty()) {
+                    succeeded.groupBy { it.instanceId }.forEach { (id, group) ->
+                        recordCompleted(kind, id, group)
+                    }
+                }
+
+                val fc = failedCount[0]
+                val sc = succeeded.size
+                commandState = when {
+                    fc == 0 -> CommandState.Success(downtimeMsg(sc))
+                    sc == 0 -> CommandState.Error("Downtime failed for all $fc target${if (fc != 1) "s" else ""}")
+                    else    -> CommandState.Warning("Downtime: $sc succeeded, $fc failed")
+                }
                 refreshAfterCommand()
             } catch (e: Exception) {
+                CommandActivityTracker.finishJob(jobId)
                 commandState = CommandState.Error(sanitizeError(e.message))
             } finally {
                 deactivateKeys(activeKeys)
@@ -583,21 +856,69 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         }
         val activeKeys = activateKeys("recheck", instance.id, fresh)
         commandState = CommandState.Loading
+
+        val jobId = UUID.randomUUID().toString()
+        CommandActivityTracker.startJob(
+            jobId, CommandJobType.RECHECK,
+            activityJobTitle("Recheck", fresh.size, instance.name),
+            fresh.map { commandTarget(instance.id, instance.name, it) },
+        )
+
         viewModelScope.launch {
+            val succeeded = mutableListOf<NagiosProblem>()
+            val failedCount = intArrayOf(0)
             try {
-                withContext(Dispatchers.IO) { api.recheckProblems(instance, fresh, settings) }
-                recordCompleted("recheck", instance.id, fresh)
-                // Mark as pending so the card shows "Recheck pending" until Nagios runs the check
-                val submittedAt = System.currentTimeMillis()
-                fresh.forEach { pendingRecheckMap[recheckPendingKey(instance.id, it)] = submittedAt }
-                val msg = recheckMsg(fresh.size)
-                EventLog.info(appContext, EventLog.CAT_COMMAND, "Recheck submitted — ${instance.name}: $msg")
-                commandState = CommandState.Success(msg)
+                withContext(Dispatchers.IO) {
+                    fresh.forEach { p ->
+                        val tid = activityTargetId(instance.id, p)
+                        CommandActivityTracker.markTargetRunning(jobId, tid)
+                        try {
+                            api.recheckProblem(instance, p, settings)
+                            CommandActivityTracker.markTargetSucceeded(jobId, tid)
+                            succeeded.add(p)
+                        } catch (e: Exception) {
+                            CommandActivityTracker.markTargetFailed(jobId, tid, sanitizeError(e.message))
+                            failedCount[0]++
+                        }
+                    }
+                }
+                CommandActivityTracker.finishJob(jobId)
+
+                if (succeeded.isNotEmpty()) {
+                    recordCompleted("recheck", instance.id, succeeded)
+                    // Mark as pending so the card shows "Recheck pending" until Nagios runs the check
+                    val submittedAt = System.currentTimeMillis()
+                    succeeded.forEach { pendingRecheckMap[recheckPendingKey(instance.id, it)] = submittedAt }
+                }
+
+                val fc = failedCount[0]
+                val sc = succeeded.size
+                val msg: String
+                val newState: CommandState
+                when {
+                    fc == 0 -> {
+                        msg = recheckMsg(sc)
+                        EventLog.info(appContext, EventLog.CAT_COMMAND, "Recheck submitted — ${instance.name}: $msg")
+                        newState = CommandState.Success(msg)
+                    }
+                    sc == 0 -> {
+                        msg = "Recheck failed for all $fc target${if (fc != 1) "s" else ""}"
+                        EventLog.error(appContext, EventLog.CAT_COMMAND, "Recheck failed — ${instance.name}")
+                        newState = CommandState.Error(msg)
+                    }
+                    else -> {
+                        msg = "Recheck: $sc succeeded, $fc failed"
+                        EventLog.warn(appContext, EventLog.CAT_COMMAND, "Recheck partial — ${instance.name}: $msg")
+                        newState = CommandState.Warning(msg)
+                    }
+                }
+                commandState = newState
                 refreshAfterCommand()
                 // Delayed refreshes to catch Nagios after it executes the forced check
                 viewModelScope.launch { kotlinx.coroutines.delay(3_000L); refreshAfterCommandDelayed() }
                 viewModelScope.launch { kotlinx.coroutines.delay(8_000L); refreshAfterCommandDelayed() }
             } catch (e: Exception) {
+                CommandActivityTracker.finishJob(jobId)
                 val err = sanitizeError(e.message)
                 EventLog.error(appContext, EventLog.CAT_COMMAND, "Recheck failed — ${instance.name}: $err")
                 commandState = CommandState.Error(e.message ?: "Recheck failed")
@@ -628,22 +949,60 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
             if (instanceMap.containsKey(id)) activeKeys.addAll(activateKeys("recheck", id, group))
         }
         commandState = CommandState.Loading
+
+        val jobId = UUID.randomUUID().toString()
+        CommandActivityTracker.startJob(
+            jobId, CommandJobType.RECHECK,
+            activityJobTitle("Recheck", fresh.size),
+            fresh.map { p ->
+                val inst = instanceMap[p.instanceId]
+                commandTarget(p.instanceId, inst?.name ?: p.instanceId, p)
+            },
+        )
+
         viewModelScope.launch {
+            val succeeded = mutableListOf<NagiosProblem>()
+            val failedCount = intArrayOf(0)
             try {
                 withContext(Dispatchers.IO) {
                     grouped.forEach { (id, group) ->
                         val instance = instanceMap[id] ?: return@forEach
-                        api.recheckProblems(instance, group, settings)
+                        group.forEach { p ->
+                            val tid = activityTargetId(id, p)
+                            CommandActivityTracker.markTargetRunning(jobId, tid)
+                            try {
+                                api.recheckProblem(instance, p, settings)
+                                CommandActivityTracker.markTargetSucceeded(jobId, tid)
+                                succeeded.add(p)
+                            } catch (e: Exception) {
+                                CommandActivityTracker.markTargetFailed(jobId, tid, sanitizeError(e.message))
+                                failedCount[0]++
+                            }
+                        }
                     }
                 }
-                grouped.forEach { (id, group) -> recordCompleted("recheck", id, group) }
-                val submittedAt = System.currentTimeMillis()
-                fresh.forEach { pendingRecheckMap[recheckPendingKey(it.instanceId, it)] = submittedAt }
-                commandState = CommandState.Success(recheckMsg(fresh.size))
+                CommandActivityTracker.finishJob(jobId)
+
+                if (succeeded.isNotEmpty()) {
+                    succeeded.groupBy { it.instanceId }.forEach { (id, group) ->
+                        recordCompleted("recheck", id, group)
+                    }
+                    val submittedAt = System.currentTimeMillis()
+                    succeeded.forEach { pendingRecheckMap[recheckPendingKey(it.instanceId, it)] = submittedAt }
+                }
+
+                val fc = failedCount[0]
+                val sc = succeeded.size
+                commandState = when {
+                    fc == 0 -> CommandState.Success(recheckMsg(sc))
+                    sc == 0 -> CommandState.Error("Recheck failed for all $fc target${if (fc != 1) "s" else ""}")
+                    else    -> CommandState.Warning("Recheck: $sc succeeded, $fc failed")
+                }
                 refreshAfterCommand()
                 viewModelScope.launch { kotlinx.coroutines.delay(3_000L); refreshAfterCommandDelayed() }
                 viewModelScope.launch { kotlinx.coroutines.delay(8_000L); refreshAfterCommandDelayed() }
             } catch (e: Exception) {
+                CommandActivityTracker.finishJob(jobId)
                 commandState = CommandState.Error(e.message ?: "Recheck failed")
             } finally {
                 deactivateKeys(activeKeys)
@@ -861,6 +1220,38 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         else -> emptyList()
     }
 
+    private fun currentLastUpdated(): Long? = when (val s = uiState) {
+        is DashboardState.Success -> s.lastUpdated
+        is DashboardState.Loading -> s.previousLastUpdated
+        is DashboardState.Error -> s.previousLastUpdated
+        else -> null
+    }
+
+    private fun currentFetchKey(): String? = when (val t = lastFetchTarget) {
+        is FetchTarget.Single -> "single:${t.instance.id}"
+        is FetchTarget.All -> "all:${t.instances.map { it.id }.sorted().joinToString(",")}"
+        null -> null
+    }
+
+    /**
+     * Returns true when the current dashboard data is recent enough to skip an automatic
+     * re-fetch triggered by screen re-entry (e.g. returning from Settings).
+     *
+     * Rules:
+     *  - Error state → always false (always retry after failure)
+     *  - Loading state → true (a fetch is already in flight; don't pile on)
+     *  - Requested scope differs from the last fetched scope → false (different target)
+     *  - Last successful update within [AUTO_REFRESH_MIN_AGE_MS] → true (data is fresh)
+     */
+    fun isDataFreshEnough(requestedKey: String): Boolean {
+        val state = uiState
+        if (state is DashboardState.Error) return false
+        if (state is DashboardState.Loading) return true
+        if (currentFetchKey() != requestedKey) return false
+        val lu = currentLastUpdated() ?: return false
+        return (System.currentTimeMillis() - lu) < AUTO_REFRESH_MIN_AGE_MS
+    }
+
     private fun buildInstanceSummary(
         instance: NagiosInstance,
         problems: List<NagiosProblem>,
@@ -897,6 +1288,43 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
             serviceAcked = 0, totalProblems = 0,
         )
 
+    private fun problemDisplayFingerprint(p: NagiosProblem): String = buildString {
+        append(p.status).append(SEP)
+        append(p.acknowledged).append(SEP)
+        append(p.notificationsEnabled).append(SEP)
+        append(p.checksEnabled).append(SEP)
+        append(p.scheduledDowntimeDepth).append(SEP)
+        append(p.isFlapping).append(SEP)
+        append(p.isSoftState).append(SEP)
+        append(p.pluginOutput).append(SEP)
+        append(p.currentAttempt).append(SEP)
+        append(p.maxAttempts).append(SEP)
+        append(p.acknowledgedBy).append(SEP)
+        append(p.acknowledgementComment).append(SEP)
+        append(p.acknowledgementTime)
+        if (p is NagiosProblem.ServiceProblem) {
+            append(SEP).append(p.hostStatus)
+            append(SEP).append(p.hostAcknowledged)
+            append(SEP).append(p.hostScheduledDowntimeDepth)
+        }
+    }
+
+    /**
+     * Returns true when [incoming] and [existing] have the same problems (by identity) with
+     * identical display fingerprints.  Order-independent.  When true, callers reuse [existing]
+     * to keep the list reference stable and avoid Compose recompositions and scroll resets.
+     */
+    private fun problemsMatchStable(incoming: List<NagiosProblem>, existing: List<NagiosProblem>): Boolean {
+        if (incoming.size != existing.size) return false
+        val inMap = incoming.associateBy { "${it.instanceId}$SEP${it.uniqueId}" }
+        val exMap = existing.associateBy { "${it.instanceId}$SEP${it.uniqueId}" }
+        if (inMap.keys != exMap.keys) return false
+        return inMap.all { (key, p) ->
+            val e = exMap[key] ?: return false
+            problemDisplayFingerprint(p) == problemDisplayFingerprint(e)
+        }
+    }
+
     private fun currentProblems(): List<NagiosProblem>? = when (val s = uiState) {
         is DashboardState.Success -> s.problems
         is DashboardState.Loading -> s.previousProblems
@@ -930,6 +1358,9 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         private const val COMMAND_COOLDOWN_MS = 5_000L
         // U+001F (unit separator): cannot appear in UUIDs or Nagios host/service names,
         // preventing false prefix matches in key lookups.
-        private const val SEP = ""
+        private const val SEP = "\u001F"
+        // Minimum age for data to be considered stale by the auto-refresh guard.
+        // Data younger than this is treated as fresh; the dashboard re-entry fetch is skipped.
+        internal const val AUTO_REFRESH_MIN_AGE_MS = 30_000L
     }
 }

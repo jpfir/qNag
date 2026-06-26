@@ -2,6 +2,7 @@ package com.exogroup.qnag.ui
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.text.font.FontWeight
@@ -21,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.exogroup.qnag.data.CommandActivityTracker
+import com.exogroup.qnag.data.CommandJobStatus
 import com.exogroup.qnag.data.CommandSettings
 import com.exogroup.qnag.data.FilterSettings
 import com.exogroup.qnag.data.NagiosInstance
@@ -172,6 +175,8 @@ fun DashboardScreen(
     onScopeChanged: (String) -> Unit = {},
     // Navigate to the full-screen problem detail view.
     onOpenProblemDetail: (NagiosProblem, NagiosInstance?) -> Unit = { _, _ -> },
+    // Open the Command Activity screen (from running-commands banner tap).
+    onOpenCommandActivity: () -> Unit = {},
     // Persisted summary panel expanded state.
     initialSummaryExpanded: Boolean = true,
     onSummaryExpandedChanged: (Boolean) -> Unit = {},
@@ -189,9 +194,16 @@ fun DashboardScreen(
         )
     }
 
-    // Trigger an initial (or re-selection) fetch whenever selection or instance list changes
+    // Trigger an initial (or re-selection) fetch whenever selection or instance list changes.
+    // The freshness guard skips the fetch when returning to the dashboard (e.g. from Settings)
+    // if data was refreshed within AUTO_REFRESH_MIN_AGE_MS; it always fetches on scope change.
     val enabledInstanceIds = remember(allInstances) { enabledInstances.map { it.id } }
     LaunchedEffect(selectedInstance, enabledInstanceIds) {
+        val requestedKey = when (val sel = selectedInstance) {
+            is InstanceSelection.All -> "all:${enabledInstances.map { it.id }.sorted().joinToString(",")}"
+            is InstanceSelection.Single -> "single:${sel.instance.id}"
+        }
+        if (nagiosViewModel.isDataFreshEnough(requestedKey)) return@LaunchedEffect
         when (val sel = selectedInstance) {
             is InstanceSelection.All -> nagiosViewModel.fetchAlertsForAll(enabledInstances, skipIfRunning = false)
             is InstanceSelection.Single -> nagiosViewModel.fetchAlerts(sel.instance, skipIfRunning = false)
@@ -319,13 +331,29 @@ fun DashboardScreen(
     var summaryExpanded by remember { mutableStateOf(initialSummaryExpanded) }
 
     // ACK / recheck / unack / downtime helpers that route correctly in single vs ALL mode
-    fun doAck(problems: List<NagiosProblem>) = when (val sel = selectedInstance) {
-        is InstanceSelection.All -> nagiosViewModel.acknowledgeProblems(enabledInstances, problems, commandSettings)
-        is InstanceSelection.Single -> nagiosViewModel.acknowledgeProblems(sel.instance, problems, commandSettings)
+    fun doAck(problems: List<NagiosProblem>) {
+        if (commandSettings.debugCommandSubmission) {
+            for (p in problems) {
+                val lbl = if (p is NagiosProblem.ServiceProblem) "${p.hostName}/${p.serviceName}" else p.hostName
+                android.util.Log.d("qNag", "[SWIPE_ACTION] ack problem=$lbl")
+            }
+        }
+        when (val sel = selectedInstance) {
+            is InstanceSelection.All -> nagiosViewModel.acknowledgeProblems(enabledInstances, problems, commandSettings)
+            is InstanceSelection.Single -> nagiosViewModel.acknowledgeProblems(sel.instance, problems, commandSettings)
+        }
     }
-    fun doRecheck(problems: List<NagiosProblem>) = when (val sel = selectedInstance) {
-        is InstanceSelection.All -> nagiosViewModel.recheckProblems(enabledInstances, problems, commandSettings)
-        is InstanceSelection.Single -> nagiosViewModel.recheckProblems(sel.instance, problems, commandSettings)
+    fun doRecheck(problems: List<NagiosProblem>) {
+        if (commandSettings.debugCommandSubmission) {
+            for (p in problems) {
+                val lbl = if (p is NagiosProblem.ServiceProblem) "${p.hostName}/${p.serviceName}" else p.hostName
+                android.util.Log.d("qNag", "[SWIPE_ACTION] recheck problem=$lbl")
+            }
+        }
+        when (val sel = selectedInstance) {
+            is InstanceSelection.All -> nagiosViewModel.recheckProblems(enabledInstances, problems, commandSettings)
+            is InstanceSelection.Single -> nagiosViewModel.recheckProblems(sel.instance, problems, commandSettings)
+        }
     }
     fun doUnack(problems: List<NagiosProblem>) = when (val sel = selectedInstance) {
         is InstanceSelection.All -> nagiosViewModel.unacknowledgeProblems(enabledInstances, problems, commandSettings)
@@ -603,6 +631,37 @@ fun DashboardScreen(
             )
         }
     ) { paddingValues ->
+        val activityJobs by CommandActivityTracker.jobs.collectAsState()
+        val runningJobCount = activityJobs.count { it.status == CommandJobStatus.RUNNING }
+
+        Column(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+            // Running commands banner — tapping opens Command Activity
+            if (runningJobCount > 0) {
+                Surface(
+                    onClick = onOpenCommandActivity,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                        Text(
+                            "$runningJobCount command${if (runningJobCount != 1) "s" else ""} running",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "View activity",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+
         DashboardContent(
             state = nagiosViewModel.uiState,
             filterSettings = filterSettings,
@@ -663,9 +722,9 @@ fun DashboardScreen(
             },
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
                 .padding(horizontal = 16.dp),
         )
+        } // end Column
     }
 }
 
@@ -705,7 +764,6 @@ private fun DashboardContent(
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // Extract stale or fresh summaries from whichever state is active
     val summaries = when (state) {
         is DashboardState.Success -> state.instanceSummaries
         is DashboardState.Loading -> state.previousSummaries
@@ -713,13 +771,28 @@ private fun DashboardContent(
         else -> emptyList()
     }
 
-    // Raw (pre-filter) problems — used by ProblemList to compute same-host service availability
-    val rawProblems = when (state) {
+    // Stale-or-fresh problem list — single derivation used everywhere below
+    val displayProblems = when (state) {
         is DashboardState.Success -> state.problems
         is DashboardState.Loading -> state.previousProblems ?: emptyList()
         is DashboardState.Error -> state.previousProblems ?: emptyList()
         else -> emptyList()
     }
+    val partialErrors = (state as? DashboardState.Success)?.partialErrors ?: emptyList()
+    val isRefreshing = state is DashboardState.Loading
+    // hasStaleData: fetch in progress AND we already have a previous list to show
+    val hasStaleData = isRefreshing && (state as? DashboardState.Loading)?.previousProblems != null
+    val lastUpdated = when (state) {
+        is DashboardState.Success -> state.lastUpdated
+        is DashboardState.Loading -> state.previousLastUpdated
+        is DashboardState.Error -> state.previousLastUpdated
+        else -> null
+    }
+    val isStale = state !is DashboardState.Success
+    val base = applyFiltersAndLocalAck(displayProblems, filterSettings, isLocallyAcknowledged)
+    val visible = applyInstanceAndQuickFilter(base, quickFilter, instanceFilter)
+    // Hoisted so it survives Success/Loading/Error transitions without resetting scroll position
+    val listState = rememberLazyListState()
 
     Column(modifier = modifier) {
         if (summaries.isNotEmpty()) {
@@ -746,88 +819,72 @@ private fun DashboardContent(
                 Tier2PlusBanner(label = tier2PlusLabel)
             }
         }
-        when (state) {
-            is DashboardState.Error -> {
-                ErrorBanner(message = state.message, onRetry = onRetry)
-                val stale = state.previousProblems
-                if (!stale.isNullOrEmpty()) {
-                    Spacer(Modifier.height(4.dp))
-                    val base = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
-                    val visible = applyInstanceAndQuickFilter(base, quickFilter, instanceFilter)
-                    ProblemList(problems = visible, rawProblems = rawProblems, selectedInstance = selectedInstance, currentInstance = currentInstance, enabledInstances = enabledInstances, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
-                        showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
-                        isRecheckPending = isRecheckPending,
-                        problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
-                        onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAckProblem = onAckProblem, onRecheckProblem = onRecheckProblem, onUnackProblem = onUnackProblem, onScheduleDowntimeProblem = onScheduleDowntimeProblem,
-                        onAckAllServicesOnHost = onAckAllServicesOnHost, onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
-                        isTier2Waiting = isTier2Waiting,
-                        header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
-                        isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
+        // Error banner — shown above the stale list so the list remains visible
+        if (state is DashboardState.Error) {
+            ErrorBanner(message = state.message, onRetry = onRetry)
+            Spacer(Modifier.height(4.dp))
+        }
+        // Partial ALL-mode failures
+        if (partialErrors.isNotEmpty()) {
+            PartialErrorBanner(partialErrors)
+            Spacer(Modifier.height(4.dp))
+        }
+        // Lightweight refresh indicator — replaces full Loading branch when stale data exists
+        if (hasStaleData) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(4.dp))
+        }
+        // Single stable content block — ProblemList is always at the same composition position
+        // so LazyListState (and scroll offset) survives Success↔Loading↔Error transitions.
+        when {
+            isRefreshing && !hasStaleData ->
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
                 }
-            }
-
-            is DashboardState.Loading -> {
-                val stale = state.previousProblems
-                if (stale != null) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(4.dp))
-                    val base = applyFiltersAndLocalAck(stale, filterSettings, isLocallyAcknowledged)
-                    val visible = applyInstanceAndQuickFilter(base, quickFilter, instanceFilter)
-                    ProblemList(problems = visible, rawProblems = rawProblems, selectedInstance = selectedInstance, currentInstance = currentInstance, enabledInstances = enabledInstances, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
-                        showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
-                        isRecheckPending = isRecheckPending,
-                        problemKey = problemKey, onOpenProblemDetail = onOpenProblemDetail,
-                        onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAckProblem = onAckProblem, onRecheckProblem = onRecheckProblem, onUnackProblem = onUnackProblem, onScheduleDowntimeProblem = onScheduleDowntimeProblem,
-                        onAckAllServicesOnHost = onAckAllServicesOnHost, onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
-                        isTier2Waiting = isTier2Waiting,
-                        header = { SummaryRow(visibleCount = visible.size, totalCount = stale.size, lastUpdated = null, stale = true) },
-                        isRefreshing = state is DashboardState.Loading, onRefresh = onRetry)
-                } else {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
-                    }
+            state is DashboardState.Idle -> Unit
+            displayProblems.isEmpty() && state is DashboardState.Success && partialErrors.isEmpty() ->
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("All green! No active problems.", color = MaterialTheme.colorScheme.primary)
                 }
-            }
-
-            is DashboardState.Success -> {
-                // Warning banner for partial ALL-mode failures (some instances reachable, some not)
-                if (state.partialErrors.isNotEmpty()) {
-                    PartialErrorBanner(state.partialErrors)
-                    Spacer(Modifier.height(4.dp))
+            displayProblems.isEmpty() && state is DashboardState.Success ->
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No problems from reachable instances.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                val base = applyFiltersAndLocalAck(state.problems, filterSettings, isLocallyAcknowledged)
-                val visible = applyInstanceAndQuickFilter(base, quickFilter, instanceFilter)
-                when {
-                    state.problems.isEmpty() && state.partialErrors.isEmpty() ->
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("All green! No active problems.", color = MaterialTheme.colorScheme.primary)
-                        }
-                    state.problems.isEmpty() ->
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No problems from reachable instances.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    visible.isEmpty() -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                        SummaryRow(visibleCount = 0, totalCount = state.problems.size, lastUpdated = state.lastUpdated, stale = false)
-                        Spacer(Modifier.height(16.dp))
-                        Text("No visible problems.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Some problems may be hidden by filters.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    else -> ProblemList(problems = visible, rawProblems = rawProblems, selectedInstance = selectedInstance, currentInstance = currentInstance, enabledInstances = enabledInstances, selectedIds = selectedIds, isSelectionMode = isSelectionMode,
-                        showInstanceNames = showInstanceNames, isLocallyAcknowledged = isLocallyAcknowledged,
-                        isRecheckPending = isRecheckPending, problemKey = problemKey,
-                        onOpenProblemDetail = onOpenProblemDetail,
-                        onToggleSelect = onToggleSelect, onLongPress = onLongPress,
-                        onAckProblem = onAckProblem, onRecheckProblem = onRecheckProblem, onUnackProblem = onUnackProblem, onScheduleDowntimeProblem = onScheduleDowntimeProblem,
-                        onAckAllServicesOnHost = onAckAllServicesOnHost, onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
-                        isTier2Waiting = isTier2Waiting,
-                        header = { SummaryRow(visibleCount = visible.size, totalCount = state.problems.size, lastUpdated = state.lastUpdated, stale = false) },
-                        isRefreshing = false, onRefresh = onRetry)
+            displayProblems.isEmpty() -> Unit  // Error with no stale — error banner above is sufficient
+            visible.isEmpty() ->
+                Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                    SummaryRow(visibleCount = 0, totalCount = displayProblems.size, lastUpdated = lastUpdated, stale = isStale)
+                    Spacer(Modifier.height(16.dp))
+                    Text("No visible problems.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Some problems may be hidden by filters.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-            }
-
-            else -> Unit
+            else -> ProblemList(
+                problems = visible,
+                rawProblems = displayProblems,
+                listState = listState,
+                selectedInstance = selectedInstance,
+                currentInstance = currentInstance,
+                enabledInstances = enabledInstances,
+                selectedIds = selectedIds,
+                isSelectionMode = isSelectionMode,
+                showInstanceNames = showInstanceNames,
+                isLocallyAcknowledged = isLocallyAcknowledged,
+                isRecheckPending = isRecheckPending,
+                problemKey = problemKey,
+                onOpenProblemDetail = onOpenProblemDetail,
+                onToggleSelect = onToggleSelect,
+                onLongPress = onLongPress,
+                onAckProblem = onAckProblem,
+                onRecheckProblem = onRecheckProblem,
+                onUnackProblem = onUnackProblem,
+                onScheduleDowntimeProblem = onScheduleDowntimeProblem,
+                onAckAllServicesOnHost = onAckAllServicesOnHost,
+                onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
+                isTier2Waiting = isTier2Waiting,
+                header = { SummaryRow(visibleCount = visible.size, totalCount = displayProblems.size, lastUpdated = lastUpdated, stale = isStale) },
+                isRefreshing = isRefreshing,
+                onRefresh = onRetry,
+            )
         }
     }
 }
@@ -837,6 +894,7 @@ private fun DashboardContent(
 private fun ProblemList(
     problems: List<NagiosProblem>,
     rawProblems: List<NagiosProblem>,
+    listState: LazyListState,
     selectedInstance: InstanceSelection,
     currentInstance: NagiosInstance,
     enabledInstances: List<NagiosInstance>,
@@ -863,7 +921,6 @@ private fun ProblemList(
     val context = androidx.compose.ui.platform.LocalContext.current
     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
 
-    val listState = rememberLazyListState()
     var swipeAllowed by remember { mutableStateOf(true) }
     LaunchedEffect(listState.isScrollInProgress) {
         if (listState.isScrollInProgress) {

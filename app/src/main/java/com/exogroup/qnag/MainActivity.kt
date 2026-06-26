@@ -33,6 +33,7 @@ import com.exogroup.qnag.reliability.ExactAlarmWatchdogScheduler
 import com.exogroup.qnag.service.NagiosMonitoringService
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.ui.AddInstanceScreen
+import com.exogroup.qnag.ui.CommandActivityScreen
 import com.exogroup.qnag.ui.DashboardScreen
 import com.exogroup.qnag.ui.ExportInstancesDialog
 import com.exogroup.qnag.ui.ImportPreviewDialog
@@ -58,6 +59,8 @@ private sealed class AppScreen {
         /** The Dashboard instance that was active — used to restore the correct scope on back. */
         val fromDashboardInstance: NagiosInstance,
     ) : AppScreen()
+    /** Command Activity opened from the Dashboard running-commands banner. */
+    data class CommandActivity(val fromDashboardInstance: NagiosInstance) : AppScreen()
 }
 
 private data class PendingExportConfig(
@@ -331,6 +334,7 @@ class MainActivity : ComponentActivity() {
                                 onSwitchInstance = { screen = AppScreen.Dashboard(it) },
                                 onAddNewInstance = { screen = AppScreen.AddInstance },
                                 onOpenSettings = { screen = AppScreen.Settings(s.instance) },
+                                onOpenCommandActivity = { screen = AppScreen.CommandActivity(s.instance) },
                                 initialDashboardScope = appSettings.selectedDashboardScope,
                                 onScopeChanged = { newScope ->
                                     val updated = appSettings.copy(selectedDashboardScope = newScope)
@@ -406,6 +410,12 @@ class MainActivity : ComponentActivity() {
                                     // active when Details was opened (preserves ALL-mode etc.)
                                     screen = AppScreen.Dashboard(s.fromDashboardInstance)
                                 },
+                            )
+                        }
+
+                        is AppScreen.CommandActivity -> {
+                            CommandActivityScreen(
+                                onBack = { screen = AppScreen.Dashboard(s.fromDashboardInstance) },
                             )
                         }
                     }

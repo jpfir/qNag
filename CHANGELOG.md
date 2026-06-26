@@ -9,6 +9,22 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ---
 
+## [1.0.5] - 2026-06-26
+
+### Added
+- **Command Activity:** Added a dedicated screen to track recent user-triggered commands (ACK, Remove ACK, Recheck, and Downtime) displaying per-target progress and final success/failure states.
+- **Active Command Indicator:** Added a live dashboard banner displayed whenever background commands are actively running.
+
+### Changed
+- **Dashboard Refresh Stability:** Refreshes now preserve the user's scroll position and display a stale-data overlay rather than a hard loading screen.
+- **State Fingerprinting:** Implemented display fingerprints to prevent unnecessary UI recomposition, list replacement, and visual jitter when incoming data has not materially changed.
+- **App Resume Behavior:** Throttled automatic background refreshes upon app resume if data was fetched recently (manual pull-to-refresh remains unthrottled).
+- **Swipe Gestures:** Calibrated swipe-to-ACK and Recheck thresholds to prevent accidental triggers during vertical scrolling; swiping is now strictly locked out during multi-selection mode.
+
+### Fixed
+- **Silent NOTIF OFF Alerts:** Instances flagged with Nagios notifications disabled now correctly populate on the dashboard while strictly suppressing device alerts (sound, vibration, push, and wearable).
+- **Background Tracking:** Patched command lifecycle tracking to prevent dropped activity states during backgrounding.
+
 ## [1.0.4] - 2026-06-24
 
 ### Added

@@ -35,14 +35,15 @@ import com.exogroup.qnag.data.NotificationSettings
 
 // ── Settings navigation destinations ─────────────────────────────────────────
 
-private const val NAV_HOME         = "home"
-private const val NAV_INSTANCES    = "instances"
-private const val NAV_MONITORING   = "monitoring"
-private const val NAV_NOTIFICATIONS= "notifications"
-private const val NAV_FILTERS      = "filters"
-private const val NAV_COMMANDS     = "commands"
-private const val NAV_ABOUT        = "about"
-private const val NAV_EVENT_LOG    = "event_log"
+private const val NAV_HOME            = "home"
+private const val NAV_INSTANCES       = "instances"
+private const val NAV_MONITORING      = "monitoring"
+private const val NAV_NOTIFICATIONS   = "notifications"
+private const val NAV_FILTERS         = "filters"
+private const val NAV_COMMANDS        = "commands"
+private const val NAV_ABOUT           = "about"
+private const val NAV_EVENT_LOG       = "event_log"
+private const val NAV_COMMAND_ACTIVITY = "command_activity"
 
 // ── Search index ──────────────────────────────────────────────────────────────
 
@@ -115,6 +116,9 @@ private val SETTINGS_INDEX = listOf(
     // Event Log
     SettingsItem("Event Log", "About", NAV_EVENT_LOG,
         listOf("log", "event", "debug", "troubleshoot", "history", "polling", "watchdog")),
+    // Command Activity
+    SettingsItem("Command Activity", "Commands", NAV_COMMAND_ACTIVITY,
+        listOf("command", "activity", "ack", "recheck", "downtime", "history", "status", "running", "failed")),
 )
 
 // ── Main SettingsScreen entry point ──────────────────────────────────────────
@@ -138,8 +142,9 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onImportInstances: (() -> Unit)? = null,
     onExportInstances: (() -> Unit)? = null,
+    initialNav: String = NAV_HOME,
 ) {
-    var nav by rememberSaveable { mutableStateOf(NAV_HOME) }
+    var nav by rememberSaveable { mutableStateOf(initialNav) }
 
     BackHandler {
         if (nav != NAV_HOME) nav = NAV_HOME else onBack()
@@ -182,6 +187,7 @@ fun SettingsScreen(
             AboutPage()
         }
         NAV_EVENT_LOG -> EventLogScreen(onBack = { nav = NAV_HOME })
+        NAV_COMMAND_ACTIVITY -> CommandActivityScreen(onBack = { nav = NAV_HOME })
     }
 }
 
@@ -264,6 +270,7 @@ private fun SettingsHome(
                 item { SettingsNavItem("Notifications & Sound", "Alerts, in-app sound, DND, channel health", NAV_NOTIFICATIONS, onNavigate) }
                 item { SettingsNavItem("Filters", "Dashboard visibility filters and regex rules", NAV_FILTERS, onNavigate) }
                 item { SettingsNavItem("Commands", "ACK and recheck command behaviour", NAV_COMMANDS, onNavigate) }
+                item { SettingsNavItem("Command Activity", "Recent ACK, recheck and downtime commands", NAV_COMMAND_ACTIVITY, onNavigate) }
                 item { SettingsNavItem("About", "App version and reliability explanation", NAV_ABOUT, onNavigate) }
                 item { SettingsNavItem("Event Log", "In-app log of polling, commands, and reliability events", NAV_EVENT_LOG, onNavigate) }
                 item { Spacer(Modifier.height(32.dp)) }
