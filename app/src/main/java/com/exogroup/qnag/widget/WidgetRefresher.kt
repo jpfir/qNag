@@ -1,12 +1,15 @@
 package com.exogroup.qnag.widget
 
 import android.content.Context
+import com.exogroup.qnag.data.EventLog
 import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.data.NagiosApi
+import com.exogroup.qnag.data.NagiosFetchRetry
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.SecureInstanceStore
 import com.exogroup.qnag.data.applyFilters
 import com.exogroup.qnag.notifications.NotificationHelper
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -64,10 +67,17 @@ object WidgetRefresher {
 
             for (instance in targets) {
                 try {
-                    val raw      = withContext(Dispatchers.IO) { api.fetchProblems(instance) }
+                    val raw = withContext(Dispatchers.IO) {
+                        NagiosFetchRetry.fetchProblems(api, instance) { attempt, max, err ->
+                            EventLog.warn(context, EventLog.CAT_POLLING,
+                                "Widget retry — ${instance.name}: attempt $attempt/$max after ${sanitizeError(err.message)}")
+                        }
+                    }
                     val filtered = applyFilters(raw, settings.filterSettings)
                     allFiltered.addAll(filtered)
                     summaries += WidgetSnapshotStore.buildInstanceSummary(instance.name, filtered)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     failCount++
                     summaries += WidgetInstanceSummary(
@@ -105,6 +115,8 @@ object WidgetRefresher {
                 }
             }
 
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             WidgetSnapshotStore.setRefreshState(
                 context, WidgetRefreshState.FAILED, sanitizeError(e.message)

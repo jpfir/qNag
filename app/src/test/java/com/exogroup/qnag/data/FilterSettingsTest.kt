@@ -227,77 +227,208 @@ class FilterSettingsTest {
         assertEquals("host2", result[0].hostName)
     }
 
-    // ── Regex filters ──────────────────────────────────────────────────────────
+    // ── Regex filter rules ────────────────────────────────────────────────────
+
+    private fun excludeRule(
+        pattern: String,
+        enabled: Boolean = true,
+        field: RegexFilterField = RegexFilterField.ANY,
+    ) = RegexFilterRule(id = "t", pattern = pattern, reverse = true, enabled = enabled, field = field)
+
+    private fun includeRule(
+        pattern: String,
+        field: RegexFilterField = RegexFilterField.ANY,
+    ) = RegexFilterRule(id = "t", pattern = pattern, reverse = false, enabled = true, field = field)
 
     @Test
-    fun `host regex hides matching host`() {
+    fun `exclude rule hides matching host`() {
         val problems = listOf(critSvc(host = "web-01"), critSvc(host = "db-01", service = "svc2"))
-        val result = applyFilters(problems, FilterSettings(
-            hostRegexEnabled = true,
-            hostRegex = "web-",
-        ))
+        val result = applyFilters(problems, FilterSettings(regexRules = listOf(excludeRule("web-"))))
         assertEquals(1, result.size)
         assertEquals("db-01", result[0].hostName)
     }
 
     @Test
-    fun `host regex reversed keeps only matching host`() {
+    fun `include rule keeps only matching host`() {
         val problems = listOf(critSvc(host = "web-01"), critSvc(host = "db-01", service = "svc2"))
-        val result = applyFilters(problems, FilterSettings(
-            hostRegexEnabled  = true,
-            hostRegex         = "web-",
-            hostRegexReverse  = true,
-        ))
+        val result = applyFilters(problems, FilterSettings(regexRules = listOf(includeRule("web-"))))
         assertEquals(1, result.size)
         assertEquals("web-01", result[0].hostName)
     }
 
     @Test
-    fun `service regex hides matching service name`() {
+    fun `exclude rule hides matching service name`() {
         val problems = listOf(
             NagiosProblem.ServiceProblem("host1", "http", "", NagiosStatus.SERVICE_CRITICAL),
             NagiosProblem.ServiceProblem("host1", "disk", "", NagiosStatus.SERVICE_CRITICAL),
         )
-        val result = applyFilters(problems, FilterSettings(
-            serviceRegexEnabled = true,
-            serviceRegex        = "http",
-        ))
+        val result = applyFilters(problems, FilterSettings(regexRules = listOf(excludeRule("http"))))
         assertEquals(1, result.size)
         assertEquals("disk", (result[0] as NagiosProblem.ServiceProblem).serviceName)
     }
 
     @Test
-    fun `statusInfo regex hides matching plugin output`() {
+    fun `exclude rule hides matching plugin output`() {
         val problems = listOf(
             NagiosProblem.ServiceProblem("h", "s1", "Connection refused", NagiosStatus.SERVICE_CRITICAL),
             NagiosProblem.ServiceProblem("h", "s2", "Timeout", NagiosStatus.SERVICE_CRITICAL),
         )
-        val result = applyFilters(problems, FilterSettings(
-            statusInfoRegexEnabled = true,
-            statusInfoRegex        = "refused",
-        ))
+        val result = applyFilters(problems, FilterSettings(regexRules = listOf(excludeRule("refused"))))
         assertEquals(1, result.size)
         assertEquals("s2", (result[0] as NagiosProblem.ServiceProblem).serviceName)
     }
 
     @Test
-    fun `invalid regex is silently ignored`() {
+    fun `multiple include rules are OR-ed`() {
+        val problems = listOf(
+            critSvc(host = "web-01"),
+            critSvc(host = "db-01", service = "svc2"),
+            critSvc(host = "cache-01", service = "svc3"),
+        )
+        val result = applyFilters(problems, FilterSettings(
+            regexRules = listOf(includeRule("web-"), includeRule("db-")),
+        ))
+        assertEquals(2, result.size)
+        assertTrue(result.any { it.hostName == "web-01" })
+        assertTrue(result.any { it.hostName == "db-01" })
+    }
+
+    @Test
+    fun `multiple exclude rules are OR-ed`() {
+        val problems = listOf(
+            critSvc(host = "web-01"),
+            critSvc(host = "db-01", service = "svc2"),
+            critSvc(host = "cache-01", service = "svc3"),
+        )
+        val result = applyFilters(problems, FilterSettings(
+            regexRules = listOf(excludeRule("web-"), excludeRule("db-")),
+        ))
+        assertEquals(1, result.size)
+        assertEquals("cache-01", result[0].hostName)
+    }
+
+    @Test
+    fun `include applied before exclude - exclude wins over include`() {
+        // include keeps web-* hosts; exclude then removes web-01 specifically
+        val problems = listOf(
+            critSvc(host = "web-01"),
+            critSvc(host = "web-02", service = "svc2"),
+            critSvc(host = "db-01", service = "svc3"),
+        )
+        val result = applyFilters(problems, FilterSettings(
+            regexRules = listOf(includeRule("web-"), excludeRule("web-01")),
+        ))
+        assertEquals(1, result.size)
+        assertEquals("web-02", result[0].hostName)
+    }
+
+    @Test
+    fun `invalid regex rule is silently ignored`() {
         val problems = listOf(critSvc(), warnSvc())
         val result = applyFilters(problems, FilterSettings(
-            hostRegexEnabled = true,
-            hostRegex        = "[unclosed(",
+            regexRules = listOf(excludeRule("[unclosed(")),
         ))
         assertEquals(2, result.size)
     }
 
     @Test
-    fun `disabled regex filter has no effect even when pattern is set`() {
+    fun `disabled regex rule has no effect`() {
         val problems = listOf(critSvc(host = "web-01"), critSvc(host = "db-01", service = "svc2"))
         val result = applyFilters(problems, FilterSettings(
-            hostRegexEnabled = false,
-            hostRegex        = "web-",
+            regexRules = listOf(excludeRule("web-", enabled = false)),
         ))
         assertEquals(2, result.size)
+    }
+
+    @Test
+    fun `empty regexRules list passes all problems through`() {
+        val problems = listOf(critSvc(), warnSvc(), downHost())
+        assertEquals(3, applyFilters(problems, FilterSettings(regexRules = emptyList())).size)
+    }
+
+    // ── Regex field selectors ─────────────────────────────────────────────────
+
+    @Test
+    fun `HOST field include keeps only problems from matching host`() {
+        val problems = listOf(
+            critSvc(host = "web-01", service = "load"),
+            critSvc(host = "db-01", service = "load"),
+        )
+        val result = applyFilters(problems, FilterSettings(regexRules = listOf(
+            includeRule("web-", field = RegexFilterField.HOST)
+        )))
+        assertEquals(1, result.size)
+        assertEquals("web-01", result[0].hostName)
+    }
+
+    @Test
+    fun `HOST field exclude hides matching host name but not service name coincidence`() {
+        // "svc" appears only in the service name — a HOST rule should not match it
+        val problems = listOf(
+            critSvc(host = "svc-host", service = "disk"),
+            critSvc(host = "web-01", service = "svc"),
+        )
+        val result = applyFilters(problems, FilterSettings(regexRules = listOf(
+            excludeRule("svc", field = RegexFilterField.HOST)
+        )))
+        // only "svc-host" matches the HOST field; "web-01" has "svc" only in service name
+        assertEquals(1, result.size)
+        assertEquals("web-01", result[0].hostName)
+    }
+
+    @Test
+    fun `SERVICE field include keeps only service problems with matching service name`() {
+        val problems = listOf(
+            critSvc(host = "h1", service = "load"),
+            critSvc(host = "h2", service = "disk"),
+            downHost(host = "load-host"),  // host problem: "load" only in host name, not service
+        )
+        val result = applyFilters(problems, FilterSettings(regexRules = listOf(
+            includeRule("load", field = RegexFilterField.SERVICE)
+        )))
+        assertEquals(1, result.size)
+        assertEquals("load", (result[0] as NagiosProblem.ServiceProblem).serviceName)
+    }
+
+    @Test
+    fun `SERVICE field include does not match host problems`() {
+        val problems = listOf(
+            downHost(host = "web-01"),
+            critSvc(host = "web-02", service = "web"),
+        )
+        val result = applyFilters(problems, FilterSettings(regexRules = listOf(
+            includeRule("web", field = RegexFilterField.SERVICE)
+        )))
+        // host problem has no service name → regexSearchTextFor(SERVICE) = "" → no match
+        assertEquals(1, result.size)
+        assertTrue(result[0] is NagiosProblem.ServiceProblem)
+    }
+
+    @Test
+    fun `STATUS_INFO field exclude hides by plugin output only`() {
+        val problems = listOf(
+            NagiosProblem.ServiceProblem("refused-host", "svc1", "All OK", NagiosStatus.SERVICE_CRITICAL),
+            NagiosProblem.ServiceProblem("h2", "refused-svc", "Connection refused", NagiosStatus.SERVICE_CRITICAL),
+        )
+        val result = applyFilters(problems, FilterSettings(regexRules = listOf(
+            excludeRule("refused", field = RegexFilterField.STATUS_INFO)
+        )))
+        // "refused" in host name and service name should NOT match STATUS_INFO field
+        assertEquals(1, result.size)
+        assertEquals("refused-host", result[0].hostName)
+    }
+
+    @Test
+    fun `STATUS_INFO field include keeps only matching plugin output`() {
+        val problems = listOf(
+            NagiosProblem.ServiceProblem("h1", "svc1", "Load OK: 0.5", NagiosStatus.SERVICE_WARNING),
+            NagiosProblem.ServiceProblem("h2", "svc2", "Disk critical", NagiosStatus.SERVICE_CRITICAL),
+        )
+        val result = applyFilters(problems, FilterSettings(regexRules = listOf(
+            includeRule("Load", field = RegexFilterField.STATUS_INFO)
+        )))
+        assertEquals(1, result.size)
+        assertEquals("svc1", (result[0] as NagiosProblem.ServiceProblem).serviceName)
     }
 
     // ── validateRegex ──────────────────────────────────────────────────────────

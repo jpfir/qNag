@@ -1,5 +1,28 @@
 package com.exogroup.qnag.data
 
+/** Which field of a problem the regex pattern is matched against. */
+enum class RegexFilterField(val displayName: String) {
+    ANY("Any field"),
+    HOST("Host"),
+    SERVICE("Service"),
+    STATUS_INFO("Status info"),
+}
+
+/**
+ * A single regex rule in the multi-rule filter list.
+ *
+ * [reverse] = false → INCLUDE (show only problems matching [pattern]; qNagstamon semantics)
+ * [reverse] = true  → EXCLUDE (hide problems matching [pattern])
+ * [field]   → which field to match; defaults to ANY (combined text, same as before).
+ */
+data class RegexFilterRule(
+    val id: String,
+    val pattern: String,
+    val reverse: Boolean = false,
+    val enabled: Boolean = true,
+    val field: RegexFilterField = RegexFilterField.ANY,
+)
+
 data class FilterSettings(
     // ── Status-based ─────────────────────────────────────────────────────────
     val hideDownHosts: Boolean = false,
@@ -22,23 +45,14 @@ data class FilterSettings(
     val hideHostsInSoftState: Boolean = false,
     val hideServicesInSoftState: Boolean = false,
 
-    // ── Regex filters ─────────────────────────────────────────────────────────
-    // Normal (reverse=false): hides problems WHERE the field matches the regex.
-    // Reverse (reverse=true): hides problems WHERE the field does NOT match.
-    val hostRegexEnabled: Boolean = false,
-    val hostRegex: String = "",
-    val hostRegexReverse: Boolean = false,
-
-    val serviceRegexEnabled: Boolean = false,
-    val serviceRegex: String = "",
-    val serviceRegexReverse: Boolean = false,
-
-    val statusInfoRegexEnabled: Boolean = false,
-    val statusInfoRegex: String = "",
-    val statusInfoRegexReverse: Boolean = false,
+    // ── Regex filter rules ────────────────────────────────────────────────────
+    // reverse=false → INCLUDE (show only matching; qNagstamon semantics)
+    // reverse=true  → EXCLUDE (hide matching)
+    // Include rules are OR'd; exclude rules are OR'd; include is applied before exclude.
+    val regexRules: List<RegexFilterRule> = emptyList(),
 )
 
-/** Returns null if the pattern is valid, or an error message if it is not. */
+/** Returns null if [pattern] is a valid regex, or an error message if not. */
 fun validateRegex(pattern: String): String? {
     if (pattern.isBlank()) return null
     return try {
@@ -50,22 +64,49 @@ fun validateRegex(pattern: String): String? {
 }
 
 /**
+ * Normalized search string combining instance, host, service, and plugin output.
+ * Used by [applyFilters] and [classifyHiddenReasons] when [field] is [RegexFilterField.ANY].
+ */
+fun NagiosProblem.regexSearchText(): String = buildString {
+    if (instanceName.isNotEmpty()) { append(instanceName); append(' ') }
+    append(hostName)
+    if (this@regexSearchText is NagiosProblem.ServiceProblem) {
+        append(' ')
+        append(serviceName)
+    }
+    append(' ')
+    append(pluginOutput)
+}
+
+/**
+ * Returns the text to match a regex rule against, based on the rule's [field].
+ * SERVICE rules return "" for host problems so they never accidentally match.
+ */
+fun NagiosProblem.regexSearchTextFor(field: RegexFilterField): String = when (field) {
+    RegexFilterField.ANY -> regexSearchText()
+    RegexFilterField.HOST -> hostName
+    RegexFilterField.SERVICE -> if (this is NagiosProblem.ServiceProblem) serviceName else ""
+    RegexFilterField.STATUS_INFO -> pluginOutput
+}
+
+/**
  * Applies [filters] to [problems] and returns the visible subset.
  *
- * Invalid regexes are silently ignored rather than crashing.
+ * Regex rule semantics (qNagstamon-compatible):
+ *   - Include rules (reverse=false): at least one must match, or the problem is hidden.
+ *   - Exclude rules (reverse=true):  if any matches, the problem is hidden.
+ *   - Include is evaluated before exclude.
+ *   - Invalid regexes are silently skipped (never crash).
  */
 fun applyFilters(problems: List<NagiosProblem>, filters: FilterSettings): List<NagiosProblem> {
-    val compiledHostRegex = if (filters.hostRegexEnabled && filters.hostRegex.isNotBlank()) {
-        try { Regex(filters.hostRegex) } catch (e: Exception) { null }
-    } else null
-
-    val compiledServiceRegex = if (filters.serviceRegexEnabled && filters.serviceRegex.isNotBlank()) {
-        try { Regex(filters.serviceRegex) } catch (e: Exception) { null }
-    } else null
-
-    val compiledStatusInfoRegex = if (filters.statusInfoRegexEnabled && filters.statusInfoRegex.isNotBlank()) {
-        try { Regex(filters.statusInfoRegex) } catch (e: Exception) { null }
-    } else null
+    // Pre-compile all enabled, non-blank rules once; Triple(regex, isExclude, field)
+    val compiled: List<Triple<Regex, Boolean, RegexFilterField>> = filters.regexRules
+        .filter { it.enabled && it.pattern.isNotBlank() }
+        .mapNotNull { rule ->
+            try { Triple(Regex(rule.pattern), rule.reverse, rule.field) } catch (_: Exception) { null }
+        }
+    val includeRules = compiled.filter { !it.second }
+    val excludeRules = compiled.filter { it.second }
 
     return problems.filter { problem ->
         // ── Type-specific filters ────────────────────────────────────────────
@@ -95,25 +136,89 @@ fun applyFilters(problems: List<NagiosProblem>, filters: FilterSettings): List<N
         if (filters.hideHostsAndServicesWithDisabledChecks && !problem.checksEnabled) return@filter false
         if (filters.hideHostsAndServicesDownForDowntime && problem.scheduledDowntimeDepth > 0) return@filter false
 
-        // ── Regex filters ────────────────────────────────────────────────────
-        if (compiledHostRegex != null) {
-            val matches = compiledHostRegex.containsMatchIn(problem.hostName)
-            val hide = if (filters.hostRegexReverse) !matches else matches
-            if (hide) return@filter false
-        }
-
-        if (compiledServiceRegex != null && problem is NagiosProblem.ServiceProblem) {
-            val matches = compiledServiceRegex.containsMatchIn(problem.serviceName)
-            val hide = if (filters.serviceRegexReverse) !matches else matches
-            if (hide) return@filter false
-        }
-
-        if (compiledStatusInfoRegex != null) {
-            val matches = compiledStatusInfoRegex.containsMatchIn(problem.pluginOutput)
-            val hide = if (filters.statusInfoRegexReverse) !matches else matches
-            if (hide) return@filter false
+        // ── Regex rules ──────────────────────────────────────────────────────
+        if (compiled.isNotEmpty()) {
+            // Include: at least one include rule must match its field-specific text
+            if (includeRules.isNotEmpty() && includeRules.none { (regex, _, field) ->
+                    regex.containsMatchIn(problem.regexSearchTextFor(field))
+                }) return@filter false
+            // Exclude: must not match any exclude rule's field-specific text
+            if (excludeRules.any { (regex, _, field) ->
+                    regex.containsMatchIn(problem.regexSearchTextFor(field))
+                }) return@filter false
         }
 
         true
     }
+}
+
+// ── Why a problem is hidden by FilterSettings ─────────────────────────────────
+
+enum class HiddenReason(val label: String) {
+    ACKNOWLEDGED("ACKED"),
+    LOCAL_ACK("LOCAL ACK"),
+    DOWNTIME("DOWNTIME"),
+    SOFT_STATE("SOFT"),
+    NOTIF_DISABLED("NOTIF OFF"),
+    CHECKS_DISABLED("CHECKS OFF"),
+    FLAPPING("FLAPPING"),
+    STATUS_FILTER("STATUS"),
+    HOST_DEPENDENCY("HOST"),
+    REGEX_FILTER("REGEX"),
+}
+
+/**
+ * Returns all [HiddenReason]s that cause [problem] to be excluded by [filters].
+ * Mirrors the logic in [applyFilters] and [applyFiltersAndLocalAck] exactly.
+ */
+fun classifyHiddenReasons(
+    problem: NagiosProblem,
+    filters: FilterSettings,
+    isLocallyAcked: Boolean,
+): List<HiddenReason> {
+    val reasons = mutableListOf<HiddenReason>()
+
+    when (problem) {
+        is NagiosProblem.HostProblem -> {
+            if (filters.hideDownHosts && problem.status == NagiosStatus.HOST_DOWN) reasons += HiddenReason.STATUS_FILTER
+            if (filters.hideUnreachableHosts && problem.status == NagiosStatus.HOST_UNREACHABLE) reasons += HiddenReason.STATUS_FILTER
+            if (filters.hideFlappingHosts && problem.isFlapping) reasons += HiddenReason.FLAPPING
+            if (filters.hideHostsInSoftState && problem.isSoftState) reasons += HiddenReason.SOFT_STATE
+        }
+        is NagiosProblem.ServiceProblem -> {
+            if (filters.hideCriticalServices && problem.status == NagiosStatus.SERVICE_CRITICAL) reasons += HiddenReason.STATUS_FILTER
+            if (filters.hideWarningServices && problem.status == NagiosStatus.SERVICE_WARNING) reasons += HiddenReason.STATUS_FILTER
+            if (filters.hideUnknownServices && problem.status == NagiosStatus.SERVICE_UNKNOWN) reasons += HiddenReason.STATUS_FILTER
+            if (filters.hideFlappingServices && problem.isFlapping) reasons += HiddenReason.FLAPPING
+            if (filters.hideServicesInSoftState && problem.isSoftState) reasons += HiddenReason.SOFT_STATE
+            if (filters.hideServicesOnAcknowledgedHosts && problem.hostAcknowledged) reasons += HiddenReason.HOST_DEPENDENCY
+            if (filters.hideServicesOnDownHosts && problem.hostStatus == NagiosStatus.HOST_DOWN) reasons += HiddenReason.HOST_DEPENDENCY
+            if (filters.hideServicesOnHostsInDowntime && problem.hostScheduledDowntimeDepth > 0) reasons += HiddenReason.HOST_DEPENDENCY
+            if (filters.hideServicesOnUnreachableHosts && problem.hostStatus == NagiosStatus.HOST_UNREACHABLE) reasons += HiddenReason.HOST_DEPENDENCY
+        }
+    }
+
+    if (filters.hideAcknowledgedHostsAndServices) {
+        if (problem.acknowledged) reasons += HiddenReason.ACKNOWLEDGED
+        else if (isLocallyAcked) reasons += HiddenReason.LOCAL_ACK
+    }
+    if (filters.hideHostsAndServicesWithDisabledNotifications && !problem.notificationsEnabled) reasons += HiddenReason.NOTIF_DISABLED
+    if (filters.hideHostsAndServicesWithDisabledChecks && !problem.checksEnabled) reasons += HiddenReason.CHECKS_DISABLED
+    if (filters.hideHostsAndServicesDownForDowntime && problem.scheduledDowntimeDepth > 0) reasons += HiddenReason.DOWNTIME
+
+    // Regex rules: hidden if no include rule matched, or any exclude rule matched
+    if (filters.regexRules.isNotEmpty()) {
+        val enabledInclude = filters.regexRules.filter { it.enabled && it.pattern.isNotBlank() && !it.reverse }
+        val enabledExclude = filters.regexRules.filter { it.enabled && it.pattern.isNotBlank() && it.reverse }
+
+        val hiddenByInclude = enabledInclude.isNotEmpty() && enabledInclude.none { rule ->
+            try { Regex(rule.pattern).containsMatchIn(problem.regexSearchTextFor(rule.field)) } catch (_: Exception) { false }
+        }
+        val hiddenByExclude = enabledExclude.any { rule ->
+            try { Regex(rule.pattern).containsMatchIn(problem.regexSearchTextFor(rule.field)) } catch (_: Exception) { false }
+        }
+        if (hiddenByInclude || hiddenByExclude) reasons += HiddenReason.REGEX_FILTER
+    }
+
+    return reasons.distinct()
 }

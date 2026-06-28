@@ -45,8 +45,8 @@ fun deriveVisualState(
     hostDown: Int, hostUnr: Int, svcCrit: Int, svcWarn: Int, svcUnk: Int,
     failedCount: Int,
 ): NotificationVisualState = when {
-    failedCount > 0                              -> NotificationVisualState.FETCH_FAILURE
     hostDown > 0 || svcCrit > 0 || hostUnr > 0 -> NotificationVisualState.CRITICAL
+    failedCount > 0                              -> NotificationVisualState.FETCH_FAILURE
     svcWarn  > 0                                 -> NotificationVisualState.WARNING
     svcUnk   > 0                                 -> NotificationVisualState.UNKNOWN
     else                                         -> NotificationVisualState.OK
@@ -275,8 +275,8 @@ object NotificationHelper {
         allProblems: List<ProblemToNotify>,
         failedInstances: List<String>,
         settings: NotificationSettings,
-    ) {
-        if (!hasPermission(context)) return
+    ): Boolean {
+        if (!hasPermission(context)) return false
 
         // All-clear: cancel the summary notification AND reset sound state so the next
         // new alert sounds immediately regardless of any remaining cooldown.
@@ -284,7 +284,7 @@ object NotificationHelper {
             cancelAlertSummary(context)
             saveAlertSoundState(context, 0, false)
             com.exogroup.qnag.sound.AlertSoundController.resetState(context)
-            return
+            return false
         }
 
         val hostDown = allProblems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_DOWN }
@@ -354,9 +354,10 @@ object NotificationHelper {
 
         NotificationManagerCompat.from(context).notify(ALERT_SUMMARY_NOTIF_ID, notif)
 
-        // For in-app mode: delegate sound to AlertSoundController so WorkManager and the
-        // foreground service use the same logic (fingerprint tracking, cooldown, etc.)
-        if (isInAppMode) {
+        // Return whether a wearable alert pulse is warranted this poll cycle.
+        // In in-app modes: AlertSoundController evaluates (and plays sound); its result drives the pulse.
+        // In NOTIFICATION_CHANNEL_ONLY mode: the channel sound decision is the pulse signal.
+        return if (isInAppMode) {
             com.exogroup.qnag.sound.AlertSoundController.evaluateAndPlay(
                 context              = context,
                 allCurrentProblems   = allProblems,
@@ -364,6 +365,8 @@ object NotificationHelper {
                 failedInstanceNames  = failedInstances,
                 settings             = settings,
             )
+        } else {
+            channelSoundAllowed
         }
     }
 
@@ -622,7 +625,9 @@ object NotificationHelper {
      * Sound / vibration are triggered only when [shouldReAlert] is true (new problems or
      * severity worsened); otherwise the notification is updated silently via setOnlyAlertOnce.
      *
-     * Call this on every foreground-service poll cycle after updating the foreground notification.
+     * NOTE: The main code paths (foreground service, background worker) use the transient
+     * [postWearableAlertPulse] instead. This function posts a long-lived NAGIOS_ALERT_NOTIF_ID
+     * and is retained for external or test use.
      * The function cancels itself when [allProblems] and [failedInstances] are both empty.
      */
     @SuppressLint("MissingPermission")

@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.exogroup.qnag.data.HiddenReason
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
 import java.text.SimpleDateFormat
@@ -54,6 +55,8 @@ fun ProblemCard(
     // Overflow-menu actions — null = hidden from menu
     // True when Tier 2+ delay is active and this alert has not yet reached the threshold
     isTier2Waiting: Boolean = false,
+    // Non-empty when this problem is hidden by saved filters (show-hidden mode)
+    hiddenReasons: List<HiddenReason> = emptyList(),
     // False while the list is scrolling or within 250 ms of scroll stop; also false in selection mode
     swipeAllowed: Boolean = true,
     onOpenDetail: (() -> Unit)? = null,
@@ -92,12 +95,15 @@ fun ProblemCard(
         }
     }
 
-    val (rawContainerColor, contentColor) = problemColors(problem)
+    val (rawContainerColor, rawContentColor) = problemColors(problem)
+    val isHidden = hiddenReasons.isNotEmpty()
     val containerColor = when {
         isSelected -> rawContainerColor.copy(alpha = 0.5f)
+        isHidden -> rawContainerColor.copy(alpha = 0.35f)
         isAcknowledged || isPendingAck -> rawContainerColor.copy(alpha = 0.65f)
         else -> rawContainerColor
     }
+    val contentColor = if (isHidden) rawContentColor.copy(alpha = 0.55f) else rawContentColor
 
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val density = LocalDensity.current
@@ -211,6 +217,7 @@ fun ProblemCard(
                     instanceName = instanceName,
                     isRecheckPending = isRecheckPending,
                     isTier2Waiting = isTier2Waiting,
+                    hiddenReasons = hiddenReasons,
                     onUnack = onUnack,
                     onAck = onAck,
                     onRecheck = onRecheck,
@@ -236,6 +243,7 @@ private fun ProblemCardContent(
     instanceName: String = "",
     isRecheckPending: Boolean = false,
     isTier2Waiting: Boolean = false,
+    hiddenReasons: List<HiddenReason> = emptyList(),
     onUnack: (() -> Unit)? = null,
     onAck: () -> Unit = {},
     onRecheck: () -> Unit = {},
@@ -380,6 +388,7 @@ private fun ProblemCardContent(
                 is NagiosProblem.ServiceProblem -> StatusBadge(serviceStatusLabel(problem.status))
                 is NagiosProblem.HostProblem    -> StatusBadge(hostStatusLabel(problem.status))
             }
+            if (hiddenReasons.isNotEmpty()) HiddenBadge(hiddenReasons)
             if (isTier2Waiting) Tier2WaitingBadge()
             if (isNew) NewBadge()
             if (isAcknowledged || isPendingAck) {
@@ -554,6 +563,14 @@ private fun StateBadge(label: String, textColor: Color, bgColor: Color) {
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
         )
     }
+}
+
+/** Dimmed badge listing the filter reason(s) why this problem is hidden in normal view. */
+@Composable
+private fun HiddenBadge(reasons: List<HiddenReason>) {
+    val label = if (reasons.isEmpty()) "HIDDEN"
+                else "HIDDEN: ${reasons.take(2).joinToString(" + ") { it.label }}"
+    StateBadge(label, Color(0xFF5D4037), Color(0xFFEFEBE9))
 }
 
 /** Tier 2+ waiting chip — shown when Tier 2+ delay is active and the alert has not reached threshold. */

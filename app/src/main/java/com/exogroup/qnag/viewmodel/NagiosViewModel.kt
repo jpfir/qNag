@@ -19,6 +19,7 @@ import com.exogroup.qnag.data.EventLog
 import com.exogroup.qnag.data.DowntimeScope
 import com.exogroup.qnag.data.InstanceSummary
 import com.exogroup.qnag.data.NagiosApi
+import com.exogroup.qnag.data.NagiosFetchRetry
 import com.exogroup.qnag.data.NagiosInstance
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
@@ -123,7 +124,12 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
         uiState = DashboardState.Loading(stale, staleSummaries, staleLastUpdated)
         fetchJob = viewModelScope.launch {
             try {
-                val problems = withContext(Dispatchers.IO) { api.fetchProblems(instance) }
+                val problems = withContext(Dispatchers.IO) {
+                    NagiosFetchRetry.fetchProblems(api, instance) { attempt, max, err ->
+                        EventLog.warn(appContext, EventLog.CAT_POLLING,
+                            "Refresh retry — ${instance.name}: attempt $attempt/$max after ${sanitizeError(err.message)}")
+                    }
+                }
                 val now = System.currentTimeMillis()
                 reconcileLocalAck(instance.id, problems)
                 reconcilePendingRechecks(instance.id, problems)
@@ -175,8 +181,13 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 val deferreds = instances.map { inst ->
                     async(Dispatchers.IO) {
                         try {
-                            val problems = api.fetchProblems(inst)
+                            val problems = NagiosFetchRetry.fetchProblems(api, inst) { attempt, max, err ->
+                                EventLog.warn(appContext, EventLog.CAT_POLLING,
+                                    "Refresh retry — ${inst.name}: attempt $attempt/$max after ${sanitizeError(err.message)}")
+                            }
                             Triple(problems, null as String?, buildInstanceSummary(inst, problems, now))
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (e: Exception) {
                             val errMsg = "${inst.name}: ${sanitizeError(e.message)}"
                             val staleSum = staleSummaries.find { it.instanceId == inst.id }
@@ -271,7 +282,7 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
     private val recentCommands = HashMap<String, Long>()
 
     private fun commandKey(kind: String, instanceId: String, problem: NagiosProblem): String =
-        "$kind$instanceId${problem.uniqueId}"
+        "$kind$SEP$instanceId$SEP${problem.uniqueId}"
 
     private fun isCommandBlocked(kind: String, instanceId: String, problem: NagiosProblem): Boolean {
         val key = commandKey(kind, instanceId, problem)
@@ -1144,20 +1155,10 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
             val uniqueId = key.removePrefix(prefix)
             val serverProblem = serverProblems.find { it.uniqueId == uniqueId }
             when {
-                serverProblem == null -> {
-                    android.util.Log.d("qNag", "[LOCAL_ACK] keep pending instance=$instanceId host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"} ageMs=$ageMs")
-                    false
-                }
-                serverProblem.acknowledged -> {
-                    android.util.Log.d("qNag", "[LOCAL_ACK] confirmed by server instance=$instanceId host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"}")
-                    true
-                }
-                ageMs < LOCAL_ACK_GRACE_MS -> {
-                    android.util.Log.d("qNag", "[LOCAL_ACK] keep pending instance=$instanceId host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"} ageMs=$ageMs")
-                    false
-                }
+                serverProblem == null       -> false
+                serverProblem.acknowledged  -> true
+                ageMs < LOCAL_ACK_GRACE_MS  -> false
                 else -> {
-                    android.util.Log.d("qNag", "[LOCAL_ACK] not confirmed after grace instance=$instanceId host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"}")
                     unconfirmed.add(overlay)
                     true
                 }
@@ -1182,20 +1183,10 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
             if (ageMs > LOCAL_ACK_TTL_MS) return@filter true
             val serverProblem = serverProblemsByKey[key]
             when {
-                serverProblem == null -> {
-                    android.util.Log.d("qNag", "[LOCAL_ACK] keep pending instance=${overlay.instanceId} host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"} ageMs=$ageMs")
-                    false
-                }
-                serverProblem.acknowledged -> {
-                    android.util.Log.d("qNag", "[LOCAL_ACK] confirmed by server instance=${overlay.instanceId} host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"}")
-                    true
-                }
-                ageMs < LOCAL_ACK_GRACE_MS -> {
-                    android.util.Log.d("qNag", "[LOCAL_ACK] keep pending instance=${overlay.instanceId} host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"} ageMs=$ageMs")
-                    false
-                }
+                serverProblem == null       -> false
+                serverProblem.acknowledged  -> true
+                ageMs < LOCAL_ACK_GRACE_MS  -> false
                 else -> {
-                    android.util.Log.d("qNag", "[LOCAL_ACK] not confirmed after grace instance=${overlay.instanceId} host=${overlay.hostName} service=${overlay.serviceName ?: "(host)"}")
                     unconfirmed.add(overlay)
                     true
                 }

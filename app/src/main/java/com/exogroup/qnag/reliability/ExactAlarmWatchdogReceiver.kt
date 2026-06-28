@@ -28,12 +28,13 @@ class ExactAlarmWatchdogReceiver : BroadcastReceiver() {
         if (intent.action != ExactAlarmWatchdogScheduler.ACTION) return
 
         MonitoringHealth.recordExactAlarmFired(context, "fired")
-        android.util.Log.d("qNag", "[watchdog] alarm fired")
 
         val store = SecureInstanceStore(context)
         val settings = store.getAppSettings()
         val instances = store.getInstances()
         val cmd = settings.commandSettings
+
+        if (cmd.debugCommandSubmission) android.util.Log.d("qNag", "[watchdog] alarm fired")
 
         // Exit if Reliability Mode is disabled
         if (!cmd.keepMonitoringActive) {

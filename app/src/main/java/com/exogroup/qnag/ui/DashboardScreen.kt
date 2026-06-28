@@ -30,7 +30,9 @@ import com.exogroup.qnag.data.NagiosInstance
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NotificationSettings
 import com.exogroup.qnag.data.NagiosStatus
+import com.exogroup.qnag.data.HiddenReason
 import com.exogroup.qnag.data.applyFilters
+import com.exogroup.qnag.data.classifyHiddenReasons
 import com.exogroup.qnag.data.tier2DelayMs
 import com.exogroup.qnag.viewmodel.CommandState
 import com.exogroup.qnag.viewmodel.DashboardState
@@ -88,7 +90,7 @@ private fun applyQuickFilter(problems: List<NagiosProblem>, filter: QuickFilter?
 
 private sealed class ProblemListRow {
     data class SectionHead(val label: String, val count: Int) : ProblemListRow()
-    data class Item(val problem: NagiosProblem) : ProblemListRow()
+    data class Item(val problem: NagiosProblem, val hiddenReasons: List<HiddenReason> = emptyList()) : ProblemListRow()
 }
 
 private fun problemSectionLabel(p: NagiosProblem): String = when {
@@ -112,6 +114,16 @@ private fun buildSectionedRows(problems: List<NagiosProblem>): List<ProblemListR
         }
         rows += ProblemListRow.Item(p)
     }
+    return rows
+}
+
+private fun buildHiddenRows(
+    problems: List<NagiosProblem>,
+    hiddenReasonsFor: (NagiosProblem) -> List<HiddenReason>,
+): List<ProblemListRow> {
+    if (problems.isEmpty()) return emptyList()
+    val rows = mutableListOf<ProblemListRow>(ProblemListRow.SectionHead("Hidden by filters", problems.size))
+    for (p in problems) rows += ProblemListRow.Item(p, hiddenReasonsFor(p))
     return rows
 }
 
@@ -237,6 +249,7 @@ fun DashboardScreen(
     var selectedIds    by remember { mutableStateOf(setOf<String>()) }
     var quickFilter    by remember { mutableStateOf<QuickFilter?>(null) }
     var instanceFilter by remember { mutableStateOf<NagiosInstance?>(null) }
+    var showHidden     by remember { mutableStateOf(false) }
     val isSelectionMode = selectedIds.isNotEmpty()
     val showInstanceNames = selectedInstance is InstanceSelection.All
 
@@ -288,7 +301,7 @@ fun DashboardScreen(
         }
     }
 
-    LaunchedEffect(selectedInstance) { selectedIds = emptySet(); quickFilter = null; instanceFilter = null }
+    LaunchedEffect(selectedInstance) { selectedIds = emptySet(); quickFilter = null; instanceFilter = null; showHidden = false }
     LaunchedEffect(visibleProblems) {
         val visibleKeys = visibleProblems.map { problemKey(it) }.toSet()
         val updated = selectedIds.intersect(visibleKeys)
@@ -714,6 +727,8 @@ fun DashboardScreen(
             tier2PlusLabel = if (notificationSettings.tier2PlusUsePerStateDelays) "per-state delays"
                              else "notify after ${notificationSettings.tier2PlusDelayMinutes}m",
             isTier2Waiting = isTier2WaitingFn,
+            showHidden = showHidden,
+            onShowHiddenChanged = { showHidden = it },
             onRetry = {
                 when (val sel = selectedInstance) {
                     is InstanceSelection.All -> nagiosViewModel.fetchAlertsForAll(enabledInstances, skipIfRunning = false)
@@ -761,6 +776,8 @@ private fun DashboardContent(
     tier2PlusActive: Boolean = false,
     tier2PlusLabel: String = "",
     isTier2Waiting: (NagiosProblem) -> Boolean = { false },
+    showHidden: Boolean = false,
+    onShowHiddenChanged: (Boolean) -> Unit = {},
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -789,8 +806,21 @@ private fun DashboardContent(
         else -> null
     }
     val isStale = state !is DashboardState.Success
-    val base = applyFiltersAndLocalAck(displayProblems, filterSettings, isLocallyAcknowledged)
-    val visible = applyInstanceAndQuickFilter(base, quickFilter, instanceFilter)
+    // Scope first (instance chip + quick severity chip), then saved filters.
+    // This ensures hidden-problems detection is bounded to the current UI scope:
+    //   scopedRaw = all problems inside the active instance/severity scope
+    //   visible    = scopedRaw after saved filters are applied
+    //   hidden     = scopedRaw − visible  (only problems hidden by saved filters inside the scope)
+    val scopedRaw = applyInstanceAndQuickFilter(displayProblems, quickFilter, instanceFilter)
+    val visible = applyFiltersAndLocalAck(scopedRaw, filterSettings, isLocallyAcknowledged)
+    val visibleSet = visible.toHashSet()
+    val hiddenByFilters = scopedRaw.filterNot { it in visibleSet }
+    val hiddenCount = hiddenByFilters.size
+    val hiddenToShow = if (showHidden) hiddenByFilters else emptyList()
+    val hiddenReasonsFor: (NagiosProblem) -> List<HiddenReason> = { problem ->
+        classifyHiddenReasons(problem, filterSettings, isLocallyAcknowledged(problem))
+    }
+    val onToggleShowHidden: (() -> Unit)? = if (hiddenCount > 0) { { onShowHiddenChanged(!showHidden) } } else null
     // Hoisted so it survives Success/Loading/Error transitions without resetting scroll position
     val listState = rememberLazyListState()
 
@@ -851,15 +881,28 @@ private fun DashboardContent(
                     Text("No problems from reachable instances.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             displayProblems.isEmpty() -> Unit  // Error with no stale — error banner above is sufficient
-            visible.isEmpty() ->
+            scopedRaw.isEmpty() ->
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No problems in current scope.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            visible.isEmpty() && hiddenToShow.isEmpty() ->
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                    SummaryRow(visibleCount = 0, totalCount = displayProblems.size, lastUpdated = lastUpdated, stale = isStale)
+                    SummaryRow(
+                        visibleCount = 0,
+                        totalCount = scopedRaw.size,
+                        lastUpdated = lastUpdated,
+                        stale = isStale,
+                        hiddenCount = hiddenCount,
+                        showHidden = showHidden,
+                        onToggleShowHidden = onToggleShowHidden,
+                    )
                     Spacer(Modifier.height(16.dp))
                     Text("No visible problems.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("Some problems may be hidden by filters.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             else -> ProblemList(
                 problems = visible,
+                hiddenProblems = hiddenToShow,
+                hiddenReasonsFor = hiddenReasonsFor,
                 rawProblems = displayProblems,
                 listState = listState,
                 selectedInstance = selectedInstance,
@@ -881,7 +924,17 @@ private fun DashboardContent(
                 onAckAllServicesOnHost = onAckAllServicesOnHost,
                 onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
                 isTier2Waiting = isTier2Waiting,
-                header = { SummaryRow(visibleCount = visible.size, totalCount = displayProblems.size, lastUpdated = lastUpdated, stale = isStale) },
+                header = {
+                    SummaryRow(
+                        visibleCount = visible.size,
+                        totalCount = scopedRaw.size,
+                        lastUpdated = lastUpdated,
+                        stale = isStale,
+                        hiddenCount = hiddenCount,
+                        showHidden = showHidden,
+                        onToggleShowHidden = onToggleShowHidden,
+                    )
+                },
                 isRefreshing = isRefreshing,
                 onRefresh = onRetry,
             )
@@ -914,6 +967,8 @@ private fun ProblemList(
     onAckAllServicesOnHost: (NagiosProblem) -> Unit = {},
     onRecheckAllServicesOnHost: (NagiosProblem) -> Unit = {},
     isTier2Waiting: (NagiosProblem) -> Boolean = { false },
+    hiddenProblems: List<NagiosProblem> = emptyList(),
+    hiddenReasonsFor: (NagiosProblem) -> List<HiddenReason> = { emptyList() },
     header: @Composable () -> Unit,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
@@ -931,7 +986,9 @@ private fun ProblemList(
         }
     }
 
-    val rows = remember(problems) { buildSectionedRows(problems) }
+    val rows = remember(problems, hiddenProblems) {
+        buildSectionedRows(problems) + buildHiddenRows(hiddenProblems, hiddenReasonsFor)
+    }
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = onRefresh,
@@ -941,7 +998,7 @@ private fun ProblemList(
             item { header() }
             items(rows, key = { row -> when (row) {
                 is ProblemListRow.SectionHead -> "section_${row.label}"
-                is ProblemListRow.Item -> problemKey(row.problem)
+                is ProblemListRow.Item -> if (row.hiddenReasons.isEmpty()) problemKey(row.problem) else "hidden_${problemKey(row.problem)}"
             }}) { row ->
                 when (row) {
                     is ProblemListRow.SectionHead -> ProblemSectionHeader(row.label, row.count)
@@ -959,6 +1016,7 @@ private fun ProblemList(
                             isPendingAck = locallyAcked && !problem.acknowledged,
                             instanceName = if (showInstanceNames) problem.instanceName else "",
                             isRecheckPending = isRecheckPending(problem),
+                            hiddenReasons = row.hiddenReasons,
                             swipeAllowed = swipeAllowed && !isSelectionMode,
                             onOpenDetail = { onOpenProblemDetail(problem) },
                             onCopyOutput = {
@@ -1040,7 +1098,15 @@ private fun InstanceSelector(
 // ── Summary row ───────────────────────────────────────────────────────────────
 
 @Composable
-private fun SummaryRow(visibleCount: Int, totalCount: Int, lastUpdated: Long?, stale: Boolean) {
+private fun SummaryRow(
+    visibleCount: Int,
+    totalCount: Int,
+    lastUpdated: Long?,
+    stale: Boolean,
+    hiddenCount: Int = 0,
+    showHidden: Boolean = false,
+    onToggleShowHidden: (() -> Unit)? = null,
+) {
     Column(modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1056,6 +1122,28 @@ private fun SummaryRow(visibleCount: Int, totalCount: Int, lastUpdated: Long?, s
                 else -> ""
             }
             if (timeText.isNotEmpty()) Text(timeText, style = MaterialTheme.typography.labelSmall)
+        }
+        if (hiddenCount > 0 && onToggleShowHidden != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "$hiddenCount hidden by filters",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = onToggleShowHidden,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                ) {
+                    Text(
+                        if (showHidden) "Hide filtered" else "Show hidden",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
         }
         Text(
             "Severity first · newest within state",

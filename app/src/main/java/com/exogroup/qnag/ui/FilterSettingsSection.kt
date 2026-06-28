@@ -1,16 +1,22 @@
 package com.exogroup.qnag.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.exogroup.qnag.data.FilterSettings
+import com.exogroup.qnag.data.RegexFilterField
+import com.exogroup.qnag.data.RegexFilterRule
 import com.exogroup.qnag.data.validateRegex
+import java.util.UUID
 
 /**
  * All filter controls.  Every change is emitted immediately via [onUpdate].
@@ -93,47 +99,52 @@ fun FilterSettingsSection(
 
         Spacer(Modifier.height(4.dp))
 
-        // ── Regex filters ──────────────────────────────────────────────────
-        FilterSubheader("Regex filters")
+        // ── Regex filter rules ─────────────────────────────────────────────
+        FilterSubheader("Regex filter rules")
         Text(
-            "When reverse is OFF: hide matching problems.  " +
-                    "When reverse is ON: hide non-matching problems.",
+            "\"Show matching\" keeps only problems matching the pattern. " +
+                    "\"Hide matching\" removes matching problems. " +
+                    "Choose a field (Host, Service, Status info) or Any field to match the combined text. " +
+                    "Rules of the same mode are OR'd; include is applied before exclude.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(4.dp))
 
-        RegexFilterGroup(
-            label = "Host name",
-            enabled = filters.hostRegexEnabled,
-            pattern = filters.hostRegex,
-            reverse = filters.hostRegexReverse,
-            onEnabledChange = { onUpdate(filters.copy(hostRegexEnabled = it)) },
-            onPatternChange = { onUpdate(filters.copy(hostRegex = it)) },
-            onReverseChange = { onUpdate(filters.copy(hostRegexReverse = it)) },
-        )
+        filters.regexRules.forEachIndexed { index, rule ->
+            RegexRuleCard(
+                rule = rule,
+                onUpdate = { updated ->
+                    onUpdate(filters.copy(regexRules = filters.regexRules.toMutableList().also { it[index] = updated }))
+                },
+                onDelete = {
+                    onUpdate(filters.copy(regexRules = filters.regexRules.filterIndexed { i, _ -> i != index }))
+                },
+            )
+            Spacer(Modifier.height(4.dp))
+        }
 
-        RegexFilterGroup(
-            label = "Service name",
-            enabled = filters.serviceRegexEnabled,
-            pattern = filters.serviceRegex,
-            reverse = filters.serviceRegexReverse,
-            onEnabledChange = { onUpdate(filters.copy(serviceRegexEnabled = it)) },
-            onPatternChange = { onUpdate(filters.copy(serviceRegex = it)) },
-            onReverseChange = { onUpdate(filters.copy(serviceRegexReverse = it)) },
-        )
+        OutlinedButton(
+            onClick = {
+                onUpdate(
+                    filters.copy(
+                        regexRules = filters.regexRules + RegexFilterRule(
+                            id = UUID.randomUUID().toString(),
+                            pattern = "",
+                            reverse = false,
+                            enabled = true,
+                        )
+                    )
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Add regex rule")
+        }
 
-        RegexFilterGroup(
-            label = "Status info / plugin output",
-            enabled = filters.statusInfoRegexEnabled,
-            pattern = filters.statusInfoRegex,
-            reverse = filters.statusInfoRegexReverse,
-            onEnabledChange = { onUpdate(filters.copy(statusInfoRegexEnabled = it)) },
-            onPatternChange = { onUpdate(filters.copy(statusInfoRegex = it)) },
-            onReverseChange = { onUpdate(filters.copy(statusInfoRegexReverse = it)) },
-        )
-
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(4.dp))
 
         // ── Reset ──────────────────────────────────────────────────────────
         OutlinedButton(
@@ -179,55 +190,91 @@ private fun FilterRow(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RegexFilterGroup(
-    label: String,
-    enabled: Boolean,
-    pattern: String,
-    reverse: Boolean,
-    onEnabledChange: (Boolean) -> Unit,
-    onPatternChange: (String) -> Unit,
-    onReverseChange: (Boolean) -> Unit,
+private fun RegexRuleCard(
+    rule: RegexFilterRule,
+    onUpdate: (RegexFilterRule) -> Unit,
+    onDelete: () -> Unit,
 ) {
-    val regexError = if (enabled && pattern.isNotBlank()) validateRegex(pattern) else null
+    val regexError = if (rule.enabled && rule.pattern.isNotBlank()) validateRegex(rule.pattern) else null
+    var fieldMenuExpanded by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            // Controls row: enable toggle | mode chips | delete
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                Switch(checked = enabled, onCheckedChange = onEnabledChange)
+                Switch(
+                    checked = rule.enabled,
+                    onCheckedChange = { onUpdate(rule.copy(enabled = it)) },
+                )
+                Spacer(Modifier.width(4.dp))
+                FilterChip(
+                    selected = !rule.reverse,
+                    onClick = { onUpdate(rule.copy(reverse = false)) },
+                    label = { Text("Show matching", maxLines = 1, overflow = TextOverflow.Clip) },
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(4.dp))
+                FilterChip(
+                    selected = rule.reverse,
+                    onClick = { onUpdate(rule.copy(reverse = true)) },
+                    label = { Text("Hide matching", maxLines = 1, overflow = TextOverflow.Clip) },
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete rule", modifier = Modifier.size(20.dp))
+                }
             }
-
-            AnimatedVisibility(visible = enabled) {
-                Column {
-                    Spacer(Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = pattern,
-                        onValueChange = onPatternChange,
-                        label = { Text("Regex pattern") },
-                        singleLine = true,
-                        isError = regexError != null,
-                        supportingText = regexError?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text("Reverse (invert match)", style = MaterialTheme.typography.bodySmall)
-                        Switch(checked = reverse, onCheckedChange = onReverseChange)
+            Spacer(Modifier.height(4.dp))
+            // Field selector
+            ExposedDropdownMenuBox(
+                expanded = fieldMenuExpanded,
+                onExpandedChange = { fieldMenuExpanded = it },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                OutlinedTextField(
+                    value = rule.field.displayName,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Field") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = fieldMenuExpanded) },
+                    modifier = Modifier.fillMaxWidth().menuAnchor(),
+                )
+                ExposedDropdownMenu(
+                    expanded = fieldMenuExpanded,
+                    onDismissRequest = { fieldMenuExpanded = false },
+                ) {
+                    RegexFilterField.entries.forEach { field ->
+                        DropdownMenuItem(
+                            text = { Text(field.displayName) },
+                            onClick = {
+                                onUpdate(rule.copy(field = field))
+                                fieldMenuExpanded = false
+                            },
+                            contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                        )
                     }
                 }
             }
+            Spacer(Modifier.height(4.dp))
+            OutlinedTextField(
+                value = rule.pattern,
+                onValueChange = { onUpdate(rule.copy(pattern = it)) },
+                label = { Text("Pattern") },
+                placeholder = { Text("e.g. load|cpu|disk") },
+                singleLine = true,
+                isError = regexError != null,
+                supportingText = regexError?.let { err -> { Text("Invalid regex: $err", color = MaterialTheme.colorScheme.error) } },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }

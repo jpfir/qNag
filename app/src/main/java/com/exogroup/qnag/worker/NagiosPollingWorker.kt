@@ -6,8 +6,10 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.exogroup.qnag.data.AckAgeStore
 import com.exogroup.qnag.data.AckSuppressCache
+import com.exogroup.qnag.data.EventLog
 import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.data.NagiosApi
+import com.exogroup.qnag.data.NagiosFetchRetry
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NotificationDecisionReason
 import com.exogroup.qnag.data.NotificationMode
@@ -20,11 +22,13 @@ import com.exogroup.qnag.data.instanceFingerprintPrefix
 import com.exogroup.qnag.data.problemFingerprint
 import com.exogroup.qnag.notifications.NotificationHelper
 import com.exogroup.qnag.notifications.ProblemToNotify
+import com.exogroup.qnag.notifications.buildCompactSummaryFromProblems
 import com.exogroup.qnag.notifications.deriveVisualStateFromProblems
 import com.exogroup.qnag.widget.WidgetInstanceSummary
 import com.exogroup.qnag.widget.WidgetSnapshotStore
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -79,7 +83,12 @@ class NagiosPollingWorker(
 
         for (instance in targets) {
             try {
-                val problems = withContext(Dispatchers.IO) { api.fetchProblems(instance) }
+                val problems = withContext(Dispatchers.IO) {
+                    NagiosFetchRetry.fetchProblems(api, instance) { attempt, max, err ->
+                        EventLog.warn(applicationContext, EventLog.CAT_POLLING,
+                            "Poll retry — ${instance.name}: attempt $attempt/$max after ${sanitizeError(err.message)}")
+                    }
+                }
                 val filtered = applyFilters(problems, settings.filterSettings)
                 allFilteredProblems.addAll(filtered)
                 widgetInstanceSummaries += WidgetSnapshotStore.buildInstanceSummary(instance.name, filtered)
@@ -139,6 +148,8 @@ class NagiosPollingWorker(
                     }
                 }
 
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 val safeError = sanitizeError(e.message)
                 widgetFailCount++
@@ -167,24 +178,27 @@ class NagiosPollingWorker(
         // would create duplicate qNag notifications in the notification shade.
         val serviceRunning = MonitoringHealth.getSnapshot(applicationContext).isServiceRunning
         if (!serviceRunning) {
-            when (notifSettings.notificationMode) {
+            val visualState = deriveVisualStateFromProblems(allCurrentProblems, failedInstanceNames.size)
+            val shouldPulse: Boolean = when (notifSettings.notificationMode) {
                 NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
                     NotificationHelper.notifySummary(applicationContext, toNotify, allCurrentProblems, failedInstanceNames, notifSettings)
-                NotificationMode.PER_PROBLEM ->
+                NotificationMode.PER_PROBLEM -> {
                     NotificationHelper.notifyBatch(applicationContext, toNotify, notifSettings)
+                    false
+                }
             }
-
-            val visualState = deriveVisualStateFromProblems(allCurrentProblems, failedInstanceNames.size)
-            NotificationHelper.evaluateAndPostAlertNotification(
-                context         = applicationContext,
-                allProblems     = allCurrentProblems,
-                newProblems     = toNotify,
-                failedInstances = failedInstanceNames,
-                visualState     = visualState,
-                sourceTitle     = widgetSourceTitle,
-                instanceTotal   = targets.size,
-                notifSettings   = notifSettings,
-            )
+            if (shouldPulse) {
+                val compactSummary = buildCompactSummaryFromProblems(
+                    sourceTitle     = widgetSourceTitle,
+                    allProblems     = allCurrentProblems,
+                    failedInstances = failedInstanceNames,
+                    instanceTotal   = targets.size,
+                    lastUpdated     = System.currentTimeMillis(),
+                )
+                NotificationHelper.postWearableAlertPulse(applicationContext, compactSummary, visualState, notifSettings)
+            } else if (allCurrentProblems.isEmpty() && failedInstanceNames.isEmpty()) {
+                NotificationHelper.cancelNagiosAlertNotification(applicationContext)
+            }
         }
 
         MonitoringHealth.recordWorkerSuccess(applicationContext)

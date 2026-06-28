@@ -17,6 +17,7 @@ import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.sound.AlertSoundController
 import com.exogroup.qnag.sound.AlertSoundPlayer
 import com.exogroup.qnag.data.NagiosApi
+import com.exogroup.qnag.data.NagiosFetchRetry
 import com.exogroup.qnag.data.NotificationMode
 import com.exogroup.qnag.data.SecureInstanceStore
 import com.exogroup.qnag.data.applyFilters
@@ -44,6 +45,7 @@ import com.exogroup.qnag.reliability.ExactAlarmWatchdogScheduler
 import com.exogroup.qnag.worker.BackgroundPollingScheduler
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -254,7 +256,10 @@ class NagiosMonitoringService : Service() {
 
             for (instance in targets) {
                 try {
-                    val problems = api.fetchProblems(instance)
+                    val problems = NagiosFetchRetry.fetchProblems(api, instance) { attempt, max, err ->
+                        EventLog.warn(applicationContext, EventLog.CAT_POLLING,
+                            "Poll retry — ${instance.name}: attempt $attempt/$max after ${sanitizeError(err.message)}")
+                    }
                     val filtered = applyFilters(problems, settings.filterSettings)
                     allFilteredProblems.addAll(filtered)
                     widgetInstanceSummaries += WidgetSnapshotStore.buildInstanceSummary(instance.name, filtered)
@@ -331,6 +336,8 @@ class NagiosMonitoringService : Service() {
                         }
                     }
 
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     val safeError = sanitizeError(e.message)
                     widgetFailCount++
@@ -354,9 +361,9 @@ class NagiosMonitoringService : Service() {
             }
 
             // ── Notification dispatch ─────────────────────────────────────────────
-            // Foreground mode posts TWO notifications per poll cycle:
-            //  1. MONITORING_SERVICE_NOTIF_ID — persistent foreground notification (summary/status).
-            //  2. NAGIOS_ALERT_NOTIF_ID — wearable-compatible alert via nagios_alerts channel.
+            // MONITORING_SERVICE_NOTIF_ID — persistent, always silent, shows current status/failure.
+            // NAGIOS_ALERT_NOTIF_ID — transient wearable pulse, posted only when AlertSoundController
+            //   determines this poll is alert-worthy (new/escalated problem or fetch failure).
             // Sound is produced by AlertSoundController (in-app, independent of channel settings).
             val widgetSourceTitle = if (targets.size == 1) targets[0].name else "All instances"
             val visualState = deriveVisualStateFromProblems(statusProblems, failedInstanceNames.size)
@@ -384,12 +391,11 @@ class NagiosMonitoringService : Service() {
                     "failed=${failedInstanceNames.size}")
             }
 
-            // Evaluate sound/wearable alert decision before posting the notification so
-            // the foreground notification can use the alert channel when warranted.
-            // SUMMARY_ONLY / GROUPED_DETAILS: evaluateAndPlay owns the decision and returns
-            //   true when a new/worse alert should pulse the wearable.
+            // Evaluate sound/wearable alert decision before posting the persistent notification.
+            // SUMMARY_ONLY / GROUPED_DETAILS: evaluateAndPlay returns true when this poll warrants
+            //   a wearable pulse (new/escalated problem or fetch failure after all retries).
             // PER_PROBLEM: per-problem notifications carry their own channel/vibration;
-            //   the foreground notification stays silent in that mode.
+            //   no wearable pulse is posted in that mode.
             val shouldAlertWearable = when (notifSettings.notificationMode) {
                 NotificationMode.SUMMARY_ONLY, NotificationMode.GROUPED_DETAILS ->
                     AlertSoundController.evaluateAndPlay(

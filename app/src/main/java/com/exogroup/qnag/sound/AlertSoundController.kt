@@ -158,9 +158,10 @@ object AlertSoundController {
         val hostUnr  = problems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_UNREACHABLE }
         val svcWarn  = problems.count { it.problem is NagiosProblem.ServiceProblem && it.problem.status == NagiosStatus.SERVICE_WARNING }
         return when {
+            failedCount          > 0 -> 6
             hostDown             > 0 -> 5
             svcCrit              > 0 -> 4
-            hostUnr > 0 || failedCount > 0 -> 3
+            hostUnr              > 0 -> 3
             svcWarn              > 0 -> 2
             problems.isNotEmpty()    -> 1
             else                     -> 0

@@ -134,12 +134,10 @@ private val SETTINGS_INDEX = listOf(
         listOf("soft", "hard", "state", "filter")),
     SettingsItem("Downtime filter", "Filters & Display", NAV_FILTERS,
         listOf("downtime", "scheduled", "maintenance", "filter")),
-    SettingsItem("Host regex filter", "Filters & Display", NAV_FILTERS,
-        listOf("host", "regex", "filter", "pattern", "include", "exclude")),
-    SettingsItem("Service regex filter", "Filters & Display", NAV_FILTERS,
-        listOf("service", "regex", "filter", "pattern", "include", "exclude")),
-    SettingsItem("Status info regex", "Filters & Display", NAV_FILTERS,
-        listOf("status", "info", "regex", "plugin", "output", "filter")),
+    SettingsItem("Regex filter rules", "Filters & Display", NAV_FILTERS,
+        listOf("regex", "regexp", "regular expression", "filter", "include", "exclude", "reverse",
+               "hide matching", "show matching", "qnagstamon", "pattern", "host", "service", "plugin output",
+               "host filter", "service filter", "status info", "regex host", "regex service", "field", "any field")),
 
     // ── Import / Export ───────────────────────────────────────────────────────
     SettingsItem("Import instances", "Import / Export", NAV_IMPORT_EXPORT,

@@ -9,6 +9,25 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ---
 
+## [1.0.7] - 2026-06-28
+
+### Added
+
+* **Multi-Rule Regex Filtering:** Stack multiple independent include/exclude regex rules targeting specific fields (*Host*, *Service*, or *Status info*).
+* **"Show Hidden" Mode:** Temporarily reveal filtered-out problems on the dashboard, complete with badges explaining *why* they were hidden (e.g., `ACKED`, `DOWNTIME`, `REGEX`).
+* **Smartwatch / Band Alerting:** Condensed layout for mirrored wearables, featuring short-lived "alert pulses" for new or worsening problems.
+
+### Changed
+
+* **Smart Connection Retries:** qNag now silently retries failed network polls up to 3 times before triggering an "Unreachable" alert, drastically cutting down on false alarms from flaky mobile data.
+* **Unified Notifications:** Combined overlapping foreground and background alerts into one clean, reliable persistent status notification.
+* **Regex Logic:** Standardized behavior to match Qnagstamon (Show-matching rules are `OR`'d together; Include rules apply before Exclude rules).
+
+### Fixed
+
+* Duplicate notifications firing simultaneously from the background worker and foreground service.
+* Widgets occasionally dropping all-green instances or clipping text.
+
 ## [1.0.6] - 2026-06-26
 
 ### Added

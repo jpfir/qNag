@@ -70,14 +70,30 @@ class SecureInstanceStore(context: Context) : InstanceStore {
         val json = prefs.getString(KEY_APP_SETTINGS, null) ?: return AppSettings()
         return try {
             val root = JsonParser.parseString(json).asJsonObject
-            AppSettings(
-                filterSettings = parseFilterSettings(root.get("filterSettings")),
+            val filterEl = root.get("filterSettings")
+
+            // Detect whether the stored JSON already has the new regexRules key.
+            // If not, migration may produce rules from old per-field patterns; write them back
+            // so the migration only runs once (next load will find regexRules in JSON).
+            val hasRegexRulesKey = filterEl?.takeIf { !it.isJsonNull }
+                ?.asJsonObject?.has("regexRules") == true
+
+            val settings = AppSettings(
+                filterSettings = parseFilterSettings(filterEl),
                 notificationSettings = parseNotificationSettings(root.get("notificationSettings")),
                 commandSettings = parseCommandSettings(root.get("commandSettings")),
                 selectedDashboardScope = root.get("selectedDashboardScope")
                     ?.takeIf { !it.isJsonNull }?.asString ?: "ALL",
                 summaryExpanded = root.get("summaryExpanded")?.asBoolean ?: true,
             )
+
+            // One-shot write-back: persist migrated regexRules into JSON so future loads
+            // read the new key directly without repeating migration.
+            if (!hasRegexRulesKey && settings.filterSettings.regexRules.isNotEmpty()) {
+                saveAppSettings(settings)
+            }
+
+            settings
         } catch (e: Exception) {
             AppSettings()
         }
@@ -177,6 +193,70 @@ class SecureInstanceStore(context: Context) : InstanceStore {
         if (el == null || el.isJsonNull) return FilterSettings()
         return try {
             val o = el.asJsonObject
+
+            // Read new regexRules list if present
+            val regexRulesFromJson: List<RegexFilterRule> = run {
+                val arr = o.get("regexRules")?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?: return@run emptyList()
+                arr.mapNotNull { elem ->
+                    try {
+                        val r = elem.asJsonObject
+                        RegexFilterRule(
+                            id = r.get("id")?.asString ?: UUID.randomUUID().toString(),
+                            pattern = r.get("pattern")?.asString ?: return@mapNotNull null,
+                            reverse = r.get("reverse")?.asBoolean ?: false,
+                            enabled = r.get("enabled")?.asBoolean ?: true,
+                            field = parseRegexField(r.get("field")?.asString),
+                        )
+                    } catch (_: Exception) { null }
+                }
+            }
+
+            // Migration: if no new regexRules, convert old per-field patterns.
+            // Semantic inversion required because old qNag and new qNagstamon semantics differ:
+            //   Old reverse=false → hide matching  (EXCLUDE behaviour)
+            //   New reverse=false → show matching  (INCLUDE behaviour; qNagstamon)
+            // So newReverse = !oldReverse preserves the user's effective filter behaviour.
+            val regexRules: List<RegexFilterRule> = if (regexRulesFromJson.isNotEmpty()) {
+                regexRulesFromJson
+            } else {
+                val migrated = mutableListOf<RegexFilterRule>()
+                val hostEnabled = o.get("hostRegexEnabled")?.asBoolean ?: false
+                val hostPattern = o.get("hostRegex")?.asString ?: ""
+                if (hostEnabled && hostPattern.isNotBlank()) {
+                    migrated += RegexFilterRule(
+                        id = "migrated_host",
+                        pattern = hostPattern,
+                        reverse = !(o.get("hostRegexReverse")?.asBoolean ?: false),
+                        enabled = true,
+                        field = RegexFilterField.HOST,
+                    )
+                }
+                val svcEnabled = o.get("serviceRegexEnabled")?.asBoolean ?: false
+                val svcPattern = o.get("serviceRegex")?.asString ?: ""
+                if (svcEnabled && svcPattern.isNotBlank()) {
+                    migrated += RegexFilterRule(
+                        id = "migrated_service",
+                        pattern = svcPattern,
+                        reverse = !(o.get("serviceRegexReverse")?.asBoolean ?: false),
+                        enabled = true,
+                        field = RegexFilterField.SERVICE,
+                    )
+                }
+                val siEnabled = o.get("statusInfoRegexEnabled")?.asBoolean ?: false
+                val siPattern = o.get("statusInfoRegex")?.asString ?: ""
+                if (siEnabled && siPattern.isNotBlank()) {
+                    migrated += RegexFilterRule(
+                        id = "migrated_statusinfo",
+                        pattern = siPattern,
+                        reverse = !(o.get("statusInfoRegexReverse")?.asBoolean ?: false),
+                        enabled = true,
+                        field = RegexFilterField.STATUS_INFO,
+                    )
+                }
+                migrated
+            }
+
             FilterSettings(
                 hideDownHosts = o.get("hideDownHosts")?.asBoolean ?: false,
                 hideUnreachableHosts = o.get("hideUnreachableHosts")?.asBoolean ?: false,
@@ -195,17 +275,16 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 hideServicesOnUnreachableHosts = o.get("hideServicesOnUnreachableHosts")?.asBoolean ?: false,
                 hideHostsInSoftState = o.get("hideHostsInSoftState")?.asBoolean ?: false,
                 hideServicesInSoftState = o.get("hideServicesInSoftState")?.asBoolean ?: false,
-                hostRegexEnabled = o.get("hostRegexEnabled")?.asBoolean ?: false,
-                hostRegex = o.get("hostRegex")?.asString ?: "",
-                hostRegexReverse = o.get("hostRegexReverse")?.asBoolean ?: false,
-                serviceRegexEnabled = o.get("serviceRegexEnabled")?.asBoolean ?: false,
-                serviceRegex = o.get("serviceRegex")?.asString ?: "",
-                serviceRegexReverse = o.get("serviceRegexReverse")?.asBoolean ?: false,
-                statusInfoRegexEnabled = o.get("statusInfoRegexEnabled")?.asBoolean ?: false,
-                statusInfoRegex = o.get("statusInfoRegex")?.asString ?: "",
-                statusInfoRegexReverse = o.get("statusInfoRegexReverse")?.asBoolean ?: false,
+                regexRules = regexRules,
             )
         } catch (_: Exception) { FilterSettings() }
+    }
+
+    private fun parseRegexField(value: String?): RegexFilterField = when (value) {
+        "HOST" -> RegexFilterField.HOST
+        "SERVICE" -> RegexFilterField.SERVICE
+        "STATUS_INFO" -> RegexFilterField.STATUS_INFO
+        else -> RegexFilterField.ANY  // null, "ANY", or unknown → ANY
     }
 
     private companion object {
