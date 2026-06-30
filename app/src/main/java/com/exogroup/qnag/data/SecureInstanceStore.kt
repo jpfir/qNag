@@ -89,6 +89,10 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                     root.get("alertListStyle")?.takeIf { !it.isJsonNull }?.asString
                         ?.let { AlertListStyle.valueOf(it) }
                 } catch (_: Exception) { null } ?: AlertListStyle.CLASSIC_ROWS,
+                alertGroupingMode = try {
+                    root.get("alertGroupingMode")?.takeIf { !it.isJsonNull }?.asString
+                        ?.let { AlertGroupingMode.valueOf(it) }
+                } catch (_: Exception) { null } ?: AlertGroupingMode.GROUPED_BY_TYPE,
             )
 
             // One-shot write-back: persist migrated regexRules into JSON so future loads

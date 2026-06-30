@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.exogroup.qnag.R
+import com.exogroup.qnag.data.AlertGroupingMode
 import com.exogroup.qnag.data.AlertListStyle
 import com.exogroup.qnag.data.CommandSettings
 import com.exogroup.qnag.data.FilterSettings
@@ -140,6 +141,9 @@ private val SETTINGS_INDEX = listOf(
                "samsung wearable", "test notification", "wear os"), isAdvanced = true),
 
     // ── Filters & Display ─────────────────────────────────────────────────────
+    SettingsItem("Alert grouping", "Display", NAV_FILTERS,
+        listOf("grouping", "grouped", "ungrouped", "order", "sorting", "severity",
+               "critical", "warning", "unknown", "anag", "legacy", "type")),
     SettingsItem("Alert list style", "Display", NAV_FILTERS,
         listOf("layout", "list", "cards", "classic", "anag", "compact", "detailed", "row",
                "modern", "dense", "style", "alert list", "view", "display",
@@ -199,6 +203,8 @@ fun SettingsScreen(
     onExportInstances: (() -> Unit)? = null,
     alertListStyle: AlertListStyle = AlertListStyle.CLASSIC_ROWS,
     onUpdateAlertListStyle: (AlertListStyle) -> Unit = {},
+    alertGroupingMode: AlertGroupingMode = AlertGroupingMode.GROUPED_BY_TYPE,
+    onUpdateAlertGroupingMode: (AlertGroupingMode) -> Unit = {},
     initialDestination: SettingsDestination = SettingsDestination.HOME,
 ) {
     val initialNav = when (initialDestination) {
@@ -252,6 +258,8 @@ fun SettingsScreen(
                 onUpdate = onUpdateFilterSettings,
                 alertListStyle = alertListStyle,
                 onUpdateAlertListStyle = onUpdateAlertListStyle,
+                alertGroupingMode = alertGroupingMode,
+                onUpdateAlertGroupingMode = onUpdateAlertGroupingMode,
             )
         }
         NAV_COMMANDS -> SettingsSubScreen("Actions", onBack = { nav = NAV_HOME }) {

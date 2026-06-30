@@ -349,6 +349,7 @@ class MainActivity : ComponentActivity() {
                                 notificationSettings = appSettings.notificationSettings,
                                 commandSettings = appSettings.commandSettings,
                                 alertListStyle = appSettings.alertListStyle,
+                                alertGroupingMode = appSettings.alertGroupingMode,
                                 onSwitchInstance = { screen = AppScreen.Dashboard(it) },
                                 onAddNewInstance = { screen = AppScreen.AddInstance },
                                 onManageInstances = { screen = AppScreen.Settings(s.instance, SettingsDestination.INSTANCES) },
@@ -404,6 +405,12 @@ class MainActivity : ComponentActivity() {
                                 alertListStyle = appSettings.alertListStyle,
                                 onUpdateAlertListStyle = { style ->
                                     val updated = appSettings.copy(alertListStyle = style)
+                                    store.saveAppSettings(updated)
+                                    appSettings = updated
+                                },
+                                alertGroupingMode = appSettings.alertGroupingMode,
+                                onUpdateAlertGroupingMode = { mode ->
+                                    val updated = appSettings.copy(alertGroupingMode = mode)
                                     store.saveAppSettings(updated)
                                     appSettings = updated
                                 },

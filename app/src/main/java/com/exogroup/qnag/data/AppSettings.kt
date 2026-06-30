@@ -14,6 +14,16 @@ enum class AlertListStyle {
     }
 }
 
+enum class AlertGroupingMode {
+    GROUPED_BY_TYPE,
+    UNGROUPED_SEVERITY;
+
+    val displayName: String get() = when (this) {
+        GROUPED_BY_TYPE    -> "Grouped by alarm type"
+        UNGROUPED_SEVERITY -> "Ungrouped, severity order"
+    }
+}
+
 data class AppSettings(
     val filterSettings: FilterSettings = FilterSettings(),
     val notificationSettings: NotificationSettings = NotificationSettings(),
@@ -25,4 +35,5 @@ data class AppSettings(
     val selectedDashboardScope: String = "ALL",
     val summaryExpanded: Boolean = true,
     val alertListStyle: AlertListStyle = AlertListStyle.CLASSIC_ROWS,
+    val alertGroupingMode: AlertGroupingMode = AlertGroupingMode.GROUPED_BY_TYPE,
 )

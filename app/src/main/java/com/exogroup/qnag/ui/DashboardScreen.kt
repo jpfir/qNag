@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.exogroup.qnag.data.AlertGroupingMode
 import com.exogroup.qnag.data.AlertListStyle
 import com.exogroup.qnag.data.CommandActivityTracker
 import com.exogroup.qnag.data.CommandJobStatus
@@ -108,6 +109,26 @@ private fun problemSectionLabel(p: NagiosProblem): String = when {
     else -> "Other"
 }
 
+// aNag/legacy severity rank: WARNING before UNKNOWN (differs from problemComparator)
+private fun ungroupedSeverityRank(p: NagiosProblem): Int = when {
+    p is NagiosProblem.HostProblem    && p.status == NagiosStatus.HOST_DOWN        -> 0
+    p is NagiosProblem.HostProblem    && p.status == NagiosStatus.HOST_UNREACHABLE -> 1
+    p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_CRITICAL -> 2
+    p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_WARNING  -> 3
+    p is NagiosProblem.ServiceProblem && p.status == NagiosStatus.SERVICE_UNKNOWN  -> 4
+    else -> 5
+}
+
+private val ungroupedComparator: Comparator<NagiosProblem> = compareBy(
+    { ungroupedSeverityRank(it) },
+    { it.instanceName },
+    { it.hostName },
+    { if (it is NagiosProblem.ServiceProblem) it.serviceName else "" },
+)
+
+private fun buildUngroupedRows(problems: List<NagiosProblem>): List<ProblemListRow> =
+    problems.map { ProblemListRow.Item(it) }
+
 private fun buildSectionedRows(problems: List<NagiosProblem>): List<ProblemListRow> {
     val countByLabel = problems.groupingBy { problemSectionLabel(it) }.eachCount()
     val rows = mutableListOf<ProblemListRow>()
@@ -185,6 +206,7 @@ fun DashboardScreen(
     notificationSettings: NotificationSettings,
     commandSettings: CommandSettings,
     alertListStyle: AlertListStyle = AlertListStyle.CLASSIC_ROWS,
+    alertGroupingMode: AlertGroupingMode = AlertGroupingMode.GROUPED_BY_TYPE,
     onSwitchInstance: (NagiosInstance) -> Unit,
     onAddNewInstance: () -> Unit,
     onManageInstances: () -> Unit = onAddNewInstance,
@@ -771,6 +793,7 @@ fun DashboardScreen(
             state = nagiosViewModel.uiState,
             filterSettings = filterSettings,
             alertListStyle = alertListStyle,
+            alertGroupingMode = alertGroupingMode,
             selectedIds = selectedIds,
             isSelectionMode = isSelectionMode,
             showInstanceNames = showInstanceNames,
@@ -841,6 +864,7 @@ private fun DashboardContent(
     state: DashboardState,
     filterSettings: FilterSettings,
     alertListStyle: AlertListStyle = AlertListStyle.CLASSIC_ROWS,
+    alertGroupingMode: AlertGroupingMode = AlertGroupingMode.GROUPED_BY_TYPE,
     selectedIds: Set<String>,
     isSelectionMode: Boolean,
     showInstanceNames: Boolean,
@@ -993,6 +1017,7 @@ private fun DashboardContent(
                         ClassicProblemsHeader(
                             visibleCount = 0,
                             hiddenCount = hiddenCount,
+                            alertGroupingMode = alertGroupingMode,
                         )
                     } else {
                         SummaryRow(
@@ -1003,6 +1028,7 @@ private fun DashboardContent(
                             hiddenCount = hiddenCount,
                             showHidden = showHidden,
                             onToggleShowHidden = onToggleShowHidden,
+                            alertGroupingMode = alertGroupingMode,
                         )
                     }
                     Spacer(Modifier.height(16.dp))
@@ -1014,6 +1040,7 @@ private fun DashboardContent(
                 hiddenReasonsFor = hiddenReasonsFor,
                 rawProblems = displayProblems,
                 alertListStyle = alertListStyle,
+                alertGroupingMode = alertGroupingMode,
                 listState = listState,
                 selectedInstance = selectedInstance,
                 currentInstance = currentInstance,
@@ -1042,6 +1069,7 @@ private fun DashboardContent(
                         ClassicProblemsHeader(
                             visibleCount = visible.size,
                             hiddenCount = hiddenCount,
+                            alertGroupingMode = alertGroupingMode,
                         )
                     } else {
                         SummaryRow(
@@ -1052,6 +1080,7 @@ private fun DashboardContent(
                             hiddenCount = hiddenCount,
                             showHidden = showHidden,
                             onToggleShowHidden = onToggleShowHidden,
+                            alertGroupingMode = alertGroupingMode,
                         )
                     }
                 },
@@ -1068,6 +1097,7 @@ private fun ProblemList(
     problems: List<NagiosProblem>,
     rawProblems: List<NagiosProblem>,
     alertListStyle: AlertListStyle = AlertListStyle.CLASSIC_ROWS,
+    alertGroupingMode: AlertGroupingMode = AlertGroupingMode.GROUPED_BY_TYPE,
     listState: LazyListState,
     selectedInstance: InstanceSelection,
     currentInstance: NagiosInstance,
@@ -1119,12 +1149,24 @@ private fun ProblemList(
     val isClassicMode = alertListStyle.isClassicMode
     // Classic: visible rows only (hidden rows rendered separately below the toggle).
     // Modern: visible + hidden rows combined in one list (existing behavior).
-    val rows = remember(problems, hiddenProblems, isClassicMode) {
-        if (!isClassicMode) buildSectionedRows(problems) + buildHiddenRows(hiddenProblems, hiddenReasonsFor)
-        else buildSectionedRows(problems)
+    val rows = remember(problems, hiddenProblems, isClassicMode, alertGroupingMode) {
+        when (alertGroupingMode) {
+            AlertGroupingMode.GROUPED_BY_TYPE ->
+                if (!isClassicMode) buildSectionedRows(problems) + buildHiddenRows(hiddenProblems, hiddenReasonsFor)
+                else buildSectionedRows(problems)
+            AlertGroupingMode.UNGROUPED_SEVERITY -> {
+                val sorted = problems.sortedWith(ungroupedComparator)
+                if (!isClassicMode) buildUngroupedRows(sorted) + buildHiddenRows(hiddenProblems.sortedWith(ungroupedComparator), hiddenReasonsFor)
+                else buildUngroupedRows(sorted)
+            }
+        }
     }
-    val classicHiddenRows = remember(hiddenProblems, isClassicMode) {
-        if (isClassicMode) buildHiddenRows(hiddenProblems, hiddenReasonsFor) else emptyList()
+    val classicHiddenRows = remember(hiddenProblems, isClassicMode, alertGroupingMode) {
+        if (!isClassicMode) emptyList()
+        else when (alertGroupingMode) {
+            AlertGroupingMode.GROUPED_BY_TYPE -> buildHiddenRows(hiddenProblems, hiddenReasonsFor)
+            AlertGroupingMode.UNGROUPED_SEVERITY -> buildHiddenRows(hiddenProblems.sortedWith(ungroupedComparator), hiddenReasonsFor)
+        }
     }
 
     val rowKeyFn: (ProblemListRow) -> Any = { row -> when (row) {
@@ -1310,6 +1352,7 @@ private fun SummaryRow(
     hiddenCount: Int = 0,
     showHidden: Boolean = false,
     onToggleShowHidden: (() -> Unit)? = null,
+    alertGroupingMode: AlertGroupingMode = AlertGroupingMode.GROUPED_BY_TYPE,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp)) {
         Row(
@@ -1350,7 +1393,10 @@ private fun SummaryRow(
             }
         }
         Text(
-            "Severity first · newest within state",
+            if (alertGroupingMode == AlertGroupingMode.UNGROUPED_SEVERITY)
+                "Ungrouped · CRITICAL, WARNING, UNKNOWN"
+            else
+                "Grouped by type · severity first",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
         )
@@ -1589,15 +1635,26 @@ private fun ClassicInstancesSummary(
 private fun ClassicProblemsHeader(
     visibleCount: Int,
     hiddenCount: Int = 0,
+    alertGroupingMode: AlertGroupingMode = AlertGroupingMode.GROUPED_BY_TYPE,
 ) {
     val totalCount = visibleCount + hiddenCount
     Column(modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp)) {
-        Text(
-            "PROBLEMS",
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "PROBLEMS",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            if (alertGroupingMode == AlertGroupingMode.UNGROUPED_SEVERITY) {
+                Text(
+                    "Ungrouped · CRITICAL, WARNING, UNKNOWN",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                )
+            }
+        }
         HorizontalDivider()
         if (totalCount > 0) {
             Text(

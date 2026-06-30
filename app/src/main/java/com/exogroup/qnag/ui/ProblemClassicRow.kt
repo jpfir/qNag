@@ -7,7 +7,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
@@ -243,22 +242,6 @@ fun ProblemClassicRow(
                             color = MaterialTheme.colorScheme.tertiary,
                         )
                         Spacer(Modifier.height(4.dp))
-                    }
-
-                    if (problem.pluginOutput.isNotBlank()) {
-                        Text(
-                            "Output",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        SelectionContainer {
-                            Text(
-                                problem.pluginOutput,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
-                            )
-                        }
                     }
 
                     ClassicMetadataSection(problem, instanceName)

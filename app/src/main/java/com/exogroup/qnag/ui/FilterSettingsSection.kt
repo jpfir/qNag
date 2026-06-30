@@ -17,6 +17,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.exogroup.qnag.data.AlertGroupingMode
 import com.exogroup.qnag.data.AlertListStyle
 import com.exogroup.qnag.data.FilterSettings
 import com.exogroup.qnag.data.RegexFilterField
@@ -35,6 +36,8 @@ fun FilterSettingsSection(
     onUpdate: (FilterSettings) -> Unit,
     alertListStyle: AlertListStyle = AlertListStyle.CLASSIC_ROWS,
     onUpdateAlertListStyle: (AlertListStyle) -> Unit = {},
+    alertGroupingMode: AlertGroupingMode = AlertGroupingMode.GROUPED_BY_TYPE,
+    onUpdateAlertGroupingMode: (AlertGroupingMode) -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
 
@@ -73,6 +76,29 @@ fun FilterSettingsSection(
             "Detailed cards: same layout, expanded by default. " +
             "Classic rows: dense aNag-style rows — tap to expand inline details and actions. " +
             "Classic expanded: same dense style with full status output always visible.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+
+        // ── Alert grouping ─────────────────────────────────────────────────
+        FilterSubheader("Alert grouping")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            AlertGroupingMode.entries.forEach { mode ->
+                FilterChip(
+                    selected = alertGroupingMode == mode,
+                    onClick = { onUpdateAlertGroupingMode(mode) },
+                    label = { Text(mode.displayName, maxLines = 1, overflow = TextOverflow.Clip) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        Text(
+            "Grouped by alarm type — separates host down, critical, warning, unknown, and hidden sections. " +
+            "Ungrouped, severity order — legacy/aNag-style list ordered CRITICAL, WARNING, UNKNOWN.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
