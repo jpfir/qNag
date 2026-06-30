@@ -367,9 +367,14 @@ fun NotificationSettingsSection(
                     supportingText = { Text("0 = no limit. Separate cooldown per state (CRITICAL, DOWN, etc.).") },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                NotifRow("Re-sound for same problem on every poll", settings.repeatSameProblemSound) {
+                NotifRow("Re-sound active alerts every refresh", settings.repeatSameProblemSound) {
                     onUpdate(settings.copy(repeatSameProblemSound = it))
                 }
+                Text(
+                    "When enabled, qNag sounds on every refresh with visible alerts, even if the app is open.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 Spacer(Modifier.height(8.dp))
                 NotifSubheader("Notification channel sounds")

@@ -9,6 +9,14 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ---
 
+## [1.0.9] - 2026-06-30
+
+### Fixed
+- Fixed Problem Details bottom action buttons being overlapped by the Android/Samsung 3-button navigation bar.
+- Improved notifications on older alerts in newer Android versions.
+
+---
+
 ## [1.0.8] - 2026-06-30
 
 ### Added

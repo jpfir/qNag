@@ -28,9 +28,9 @@ data class NotificationSettings(
     // Minimum seconds between sounds for the same state/channel (e.g. CRITICAL).
     // 0 = no per-state cooldown.
     val perStateSoundCooldownSeconds: Int = 300,
-    // When false (default), the same problem fingerprint never gets another sound
-    // notification unless its status changes.  Set true to re-sound on every poll.
-    val repeatSameProblemSound: Boolean = false,
+    // When false, the same problem fingerprint never gets another sound notification unless
+    // its status changes.  Defaults to true so alerts re-sound every refresh out of the box.
+    val repeatSameProblemSound: Boolean = true,
 
     // ── Notification display mode ──────────────────────────────────────────────
     // SUMMARY_ONLY (default): one compact summary notification updated in place.

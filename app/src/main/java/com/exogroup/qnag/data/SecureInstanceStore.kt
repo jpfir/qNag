@@ -156,7 +156,7 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 refreshIntervalMinutes = o.get("refreshIntervalMinutes")?.asInt ?: 15,
                 globalSoundCooldownSeconds = o.get("globalSoundCooldownSeconds")?.asInt ?: 300,
                 perStateSoundCooldownSeconds = o.get("perStateSoundCooldownSeconds")?.asInt ?: 300,
-                repeatSameProblemSound = o.get("repeatSameProblemSound")?.asBoolean ?: false,
+                repeatSameProblemSound = o.get("repeatSameProblemSound")?.asBoolean ?: true,
                 notificationMode = try {
                     o.get("notificationMode")?.takeIf { !it.isJsonNull }?.asString
                         ?.let { NotificationMode.valueOf(it) }

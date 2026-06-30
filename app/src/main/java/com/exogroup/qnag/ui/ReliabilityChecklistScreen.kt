@@ -99,7 +99,12 @@ fun ReliabilityChecklistScreen(
 
     Scaffold(
         bottomBar = {
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
                 Button(onClick = onContinue, modifier = Modifier.fillMaxWidth()) {
                     Text("Start monitoring")
                 }

@@ -10,7 +10,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.exogroup.qnag.data.AckComment
 import com.exogroup.qnag.data.AckSuppressCache
+import com.exogroup.qnag.data.NotificationDecisionReason
 import com.exogroup.qnag.data.CommandActivityTracker
+import com.exogroup.qnag.data.evaluateNotificationDecision
+import com.exogroup.qnag.notifications.NotificationHelper
+import com.exogroup.qnag.notifications.ProblemToNotify
+import com.exogroup.qnag.notifications.buildCompactSummaryFromProblems
+import com.exogroup.qnag.notifications.deriveVisualStateFromProblems
+import com.exogroup.qnag.sound.AlertSoundController
 import com.exogroup.qnag.data.CommandJobType
 import com.exogroup.qnag.data.CommandSettings
 import com.exogroup.qnag.data.CommandTargetResult
@@ -136,6 +143,7 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 val summary = buildInstanceSummary(instance, problems, now)
                 val finalProblems = if (stale != null && problemsMatchStable(problems, stale)) stale else problems
                 uiState = DashboardState.Success(finalProblems, now, instanceSummaries = listOf(summary))
+                evaluateSoundAfterFetch(problems, instance.id)
                 viewModelScope.launch {
                     runCatching {
                         val filterSettings = SecureInstanceStore(appContext).getAppSettings().filterSettings
@@ -215,6 +223,7 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     val finalProblems = if (stale != null && problemsMatchStable(allProblems, stale)) stale else allProblems
                     uiState = DashboardState.Success(finalProblems, now, errors, summaries)
+                    evaluateSoundAfterFetch(allProblems, "")
                     viewModelScope.launch {
                         runCatching {
                             val filterSettings = SecureInstanceStore(appContext).getAppSettings().filterSettings
@@ -1321,6 +1330,58 @@ class NagiosViewModel(application: Application) : AndroidViewModel(application) 
             serviceCritical = 0, serviceWarning = 0, serviceUnknown = 0,
             serviceAcked = 0, totalProblems = 0,
         )
+
+    // ── Sound evaluation (UI-triggered refresh path) ──────────────────────────
+
+    /**
+     * Evaluate sound / wearable pulse after a ViewModel-triggered refresh.
+     *
+     * Mirrors the AlertSoundController evaluation in NagiosMonitoringService so that alert
+     * sound fires even when the user is looking at the dashboard and a refresh completes.
+     * AlertSoundController persists fingerprint + cooldown state in SharedPreferences shared
+     * with the service, so the two paths never double-sound within any active cooldown window.
+     *
+     * Applies both dashboard FilterSettings and notification-decision filters (ACK, soft-state,
+     * downtime, NOTIF-OFF, Tier 2+) before evaluating, matching Goal 4 (filtered alerts only).
+     */
+    private fun evaluateSoundAfterFetch(problems: List<NagiosProblem>, instanceId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val appSettings = SecureInstanceStore(appContext).getAppSettings()
+            val notifSettings = appSettings.notificationSettings
+            if (!notifSettings.notificationsEnabled) return@launch
+            val now = System.currentTimeMillis()
+            val filtered = applyFilters(problems, appSettings.filterSettings)
+            val allCurrentProblems = filtered.mapNotNull { problem ->
+                val iid = problem.instanceId.ifEmpty { instanceId }
+                val decision = evaluateNotificationDecision(iid, problem, notifSettings, now, appContext)
+                if (!decision.shouldNotify) return@mapNotNull null
+                if (decision.reason != NotificationDecisionReason.ACKED_RENOTIFY_ELIGIBLE &&
+                    AckSuppressCache.isSuppressed(appContext, iid, problem)) return@mapNotNull null
+                ProblemToNotify(iid, problem.instanceName, problem)
+            }
+            val shouldPulse = AlertSoundController.evaluateAndPlay(
+                context = appContext,
+                allCurrentProblems = allCurrentProblems,
+                newProblems = emptyList(),
+                failedInstanceNames = emptyList(),
+                settings = notifSettings,
+            )
+            if (shouldPulse && NotificationHelper.hasPermission(appContext)) {
+                val visualState = deriveVisualStateFromProblems(allCurrentProblems, 0)
+                val sourceTitle = allCurrentProblems
+                    .mapNotNull { it.instanceName.takeIf { n -> n.isNotEmpty() } }
+                    .distinct().singleOrNull() ?: "All instances"
+                val compactSummary = buildCompactSummaryFromProblems(
+                    sourceTitle = sourceTitle,
+                    allProblems = allCurrentProblems,
+                    failedInstances = emptyList(),
+                    instanceTotal = allCurrentProblems.map { it.instanceId }.distinct().size.coerceAtLeast(1),
+                    lastUpdated = now,
+                )
+                NotificationHelper.postWearableAlertPulse(appContext, compactSummary, visualState, notifSettings)
+            }
+        }
+    }
 
     private fun problemDisplayFingerprint(p: NagiosProblem): String = buildString {
         append(p.status).append(SEP)

@@ -20,7 +20,6 @@ object NagiosStatus {
     const val SERVICE_UNKNOWN = 8
     const val SERVICE_CRITICAL = 16
 
-    // TODO: Verify exact host status values against your Nagios statusjson.cgi response.
     const val HOST_UP = 2
     const val HOST_DOWN = 4
     const val HOST_UNREACHABLE = 8
@@ -83,7 +82,6 @@ sealed class NagiosProblem {
         override val scheduledDowntimeDepth: Int = 0,
         override val isFlapping: Boolean = false,
         override val isSoftState: Boolean = false,
-        // TODO: Nagios statusjson may not include host_status in service details — check your version.
         val hostStatus: Int? = null,
         val hostAcknowledged: Boolean = false,
         val hostScheduledDowntimeDepth: Int = 0,
