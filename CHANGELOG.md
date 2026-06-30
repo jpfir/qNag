@@ -9,6 +9,16 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ---
 
+## [1.0.8] - 2026-06-30
+
+### Added
+- **Host Blast Radius:** HOST DOWN details now include a grouped summary of all related service alerts attached to that host. Large lists are neatly collapsed by default to keep the screen readable.
+
+### Fixed
+- Ensured related services are correctly matched to their specific parent instance when viewing the combined "All instances" dashboard.
+
+---
+
 ## [1.0.7] - 2026-06-28
 
 ### Added

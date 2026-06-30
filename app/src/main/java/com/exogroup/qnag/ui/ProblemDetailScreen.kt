@@ -126,23 +126,32 @@ fun ProblemDetailScreen(
         else                      -> null
     }
     // Related service problems: same instance + same hostName, sorted by severity.
-    // Only computed for host problems; null for service problems or when data is unavailable.
-    val relatedServices: List<NagiosProblem.ServiceProblem>? = if (problem is NagiosProblem.HostProblem) {
-        val resolvedInstanceId = problem.instanceId.ifEmpty { instance?.id ?: "" }
-        rawProblems?.filterIsInstance<NagiosProblem.ServiceProblem>()
-            ?.filter { svc ->
-                val svcInstId = svc.instanceId.ifEmpty { resolvedInstanceId }
-                svcInstId == resolvedInstanceId && svc.hostName == problem.hostName
-            }
-            ?.sortedBy { svc ->
-                when (svc.status) {
-                    NagiosStatus.SERVICE_CRITICAL -> 0
-                    NagiosStatus.SERVICE_WARNING  -> 1
-                    NagiosStatus.SERVICE_UNKNOWN  -> 2
-                    else                          -> 3
+    // Only computed for host problems; null when rawProblems is not yet available (Idle state).
+    // Memoized on rawProblems reference + problem identity — recomputes only when data changes.
+    val relatedServices: List<NagiosProblem.ServiceProblem>? = remember(
+        problem.uniqueId,
+        problem.instanceId,
+        problem.hostName,
+        instance?.id,
+        rawProblems,
+    ) {
+        if (problem is NagiosProblem.HostProblem) {
+            val resolvedInstanceId = problem.instanceId.ifEmpty { instance?.id ?: "" }
+            rawProblems?.filterIsInstance<NagiosProblem.ServiceProblem>()
+                ?.filter { svc ->
+                    val svcInstId = svc.instanceId.ifEmpty { resolvedInstanceId }
+                    svcInstId == resolvedInstanceId && svc.hostName == problem.hostName
                 }
-            }
-    } else null
+                ?.sortedBy { svc ->
+                    when (svc.status) {
+                        NagiosStatus.SERVICE_CRITICAL -> 0
+                        NagiosStatus.SERVICE_WARNING  -> 1
+                        NagiosStatus.SERVICE_UNKNOWN  -> 2
+                        else                          -> 3
+                    }
+                }
+        } else null
+    }
 
     Scaffold(
         topBar = {
@@ -573,7 +582,7 @@ private fun RelatedServicesSection(relatedServices: List<NagiosProblem.ServicePr
     DetailSectionHeader("Related service alerts")
     if (relatedServices == null) {
         Text(
-            "Related service alerts unavailable — refresh qNag to load current data.",
+            "Related service alerts unavailable.\nRefresh qNag to load current related services.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
