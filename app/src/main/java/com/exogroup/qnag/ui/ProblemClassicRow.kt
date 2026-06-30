@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -56,6 +57,8 @@ fun ProblemClassicRow(
     onRecheck: () -> Unit,
     // False while the list is scrolling or within 250 ms of scroll stop; also false in selection mode
     swipeAllowed: Boolean = true,
+    // When true plugin output is always fully visible (Classic expanded style)
+    alwaysShowFullOutput: Boolean = false,
 ) {
     var isExpanded by remember(problem.uniqueId, problem.instanceId) { mutableStateOf(false) }
 
@@ -117,35 +120,69 @@ fun ProblemClassicRow(
                         overflow = TextOverflow.Ellipsis,
                     )
 
-                    // ── Line 2: context + inline state flags ──────────────────
-                    val contextParts = mutableListOf<String>()
-                    when (problem) {
+                    // ── Line 2: context text + compact state tag pills ─────────
+                    val contextText = when (problem) {
                         is NagiosProblem.ServiceProblem ->
-                            contextParts.add(
-                                if (instanceName.isNotEmpty()) "$instanceName > ${problem.hostName}"
-                                else problem.hostName
-                            )
+                            if (instanceName.isNotEmpty()) "$instanceName > ${problem.hostName}"
+                            else problem.hostName
                         is NagiosProblem.HostProblem ->
-                            if (instanceName.isNotEmpty()) contextParts.add(instanceName)
+                            instanceName.takeIf { it.isNotEmpty() } ?: ""
                     }
-                    val flagParts = mutableListOf<String>()
-                    if (isAcknowledged) flagParts.add(if (isPendingAck && !problem.acknowledged) "ACK…" else "ACK")
-                    if (problem.scheduledDowntimeDepth > 0) flagParts.add("DT")
-                    if (!problem.notificationsEnabled) flagParts.add("NOTIF OFF")
-                    if (problem.isSoftState) flagParts.add("SOFT")
-                    if (isTier2Waiting) flagParts.add("T2+")
-                    if (flagParts.isNotEmpty()) contextParts.add(flagParts.joinToString(" "))
-                    if (contextParts.isNotEmpty()) {
-                        Text(
-                            text = contextParts.joinToString(" · "),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (isHidden)
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
-                            else
-                                MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                    // Compact tags matching Modern badge colors: hidden reason first, then state flags
+                    val isNew = problem.lastStateChange?.let {
+                        (System.currentTimeMillis() - it) < NEW_STATE_THRESHOLD_MS
+                    } ?: false
+                    val stateTags = buildList<String> {
+                        if (isHidden) {
+                            add(when {
+                                hiddenReasons.isEmpty() -> "HIDDEN"
+                                hiddenReasons.size <= 2 ->
+                                    "HIDDEN: ${hiddenReasons.joinToString(" ") { it.label }}"
+                                else -> "HIDDEN"
+                            })
+                        }
+                        if (isNew) add("NEW")
+                        if (isAcknowledged)
+                            add(if (isPendingAck && !problem.acknowledged) "ACK…" else "ACK")
+                        if (problem.scheduledDowntimeDepth > 0) add("DT")
+                        if (problem is NagiosProblem.ServiceProblem &&
+                            problem.hostScheduledDowntimeDepth > 0) add("HOST DT")
+                        if (problem.isSoftState) add("SOFT")
+                        if (problem.isFlapping) add("FLAP")
+                        if (!problem.notificationsEnabled) add("NOTIF OFF")
+                        if (!problem.checksEnabled) add("CHECKS OFF")
+                        if (isRecheckPending) add("RECHECK")
+                        if (isTier2Waiting) add("T2+")
+                    }
+                    if (contextText.isNotEmpty() || stateTags.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (contextText.isNotEmpty()) {
+                                Text(
+                                    text = contextText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isHidden)
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                                    else
+                                        MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            } else {
+                                Spacer(Modifier.weight(1f))
+                            }
+                            if (stateTags.isNotEmpty()) {
+                                Spacer(Modifier.width(3.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    stateTags.forEach { text ->
+                                        ClassicStateTag(text)
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // ── HOST DOWN: related service hint ───────────────────────
@@ -162,6 +199,7 @@ fun ProblemClassicRow(
 
                     // ── Plugin output: 2 lines collapsed, all when expanded ───
                     if (problem.pluginOutput.isNotBlank()) {
+                        val showFullOutput = isExpanded || alwaysShowFullOutput
                         Text(
                             text = problem.pluginOutput,
                             style = MaterialTheme.typography.bodySmall,
@@ -169,8 +207,8 @@ fun ProblemClassicRow(
                                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
                             else
                                 MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = if (isExpanded) Int.MAX_VALUE else 2,
-                            overflow = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+                            maxLines = if (showFullOutput) Int.MAX_VALUE else 2,
+                            overflow = if (showFullOutput) TextOverflow.Clip else TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -287,6 +325,35 @@ fun ProblemClassicRow(
     }
     } // end CommandSwipeContainer
 }
+
+// ── Compact inline state tag pill ────────────────────────────────────────────
+
+@Composable
+private fun ClassicStateTag(text: String) {
+    val (bgColor, textColor) = when {
+        text == "ACK"        -> Color(0xFF388E3C) to Color.White
+        text == "ACK…"       -> Color(0xAA388E3C) to Color.White
+        text == "NEW"        -> Color(0xFF1565C0) to Color.White
+        text == "DT" || text == "HOST DT" -> Color(0xFFE3F2FD) to Color(0xFF1565C0)
+        text == "SOFT"       -> Color(0xFFECEFF1) to Color(0xFF455A64)
+        text == "FLAP"       -> Color(0xFFEDE7F6) to Color(0xFF6A1B9A)
+        text == "NOTIF OFF" || text == "CHECKS OFF" -> Color(0xFFF5F5F5) to Color(0xFF616161)
+        text == "RECHECK" || text == "T2+" -> Color(0xFFE3F2FD) to Color(0xFF1565C0)
+        text.startsWith("HIDDEN") -> Color(0xFFEFEBE9) to Color(0xFF5D4037)
+        else                 -> Color(0xFFF5F5F5) to Color(0xFF616161)
+    }
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        color = textColor,
+        modifier = Modifier
+            .background(bgColor, RoundedCornerShape(3.dp))
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+    )
+}
+
+private const val NEW_STATE_THRESHOLD_MS = 15 * 60 * 1_000L
 
 // ── Inline check metadata ─────────────────────────────────────────────────────
 

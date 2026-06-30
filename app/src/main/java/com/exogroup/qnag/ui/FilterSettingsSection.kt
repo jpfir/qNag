@@ -1,14 +1,19 @@
 package com.exogroup.qnag.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -35,11 +40,26 @@ fun FilterSettingsSection(
 
         // ── Alert list style ───────────────────────────────────────────────
         FilterSubheader("Alert list style")
+        // Two rows of 2 chips each to fit all four options comfortably
+        val styleEntries = AlertListStyle.entries
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            AlertListStyle.entries.forEach { style ->
+            styleEntries.take(2).forEach { style ->
+                FilterChip(
+                    selected = alertListStyle == style,
+                    onClick = { onUpdateAlertListStyle(style) },
+                    label = { Text(style.displayName, maxLines = 1, overflow = TextOverflow.Clip) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            styleEntries.drop(2).forEach { style ->
                 FilterChip(
                     selected = alertListStyle == style,
                     onClick = { onUpdateAlertListStyle(style) },
@@ -51,7 +71,8 @@ fun FilterSettingsSection(
         Text(
             "Modern cards: standard qNag layout with swipe gestures. " +
             "Detailed cards: same layout, expanded by default. " +
-            "Classic rows: dense aNag-style rows — tap to expand inline details and actions.",
+            "Classic rows: dense aNag-style rows — tap to expand inline details and actions. " +
+            "Classic expanded: same dense style with full status output always visible.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -126,59 +147,84 @@ fun FilterSettingsSection(
 
         Spacer(Modifier.height(4.dp))
 
-        // ── Regex filter rules ─────────────────────────────────────────────
-        FilterSubheader("Regex filter rules")
-        Text(
-            "\"Show matching\" keeps only problems matching the pattern. " +
-                    "\"Hide matching\" removes matching problems. " +
-                    "Choose a field (Host, Service, Status info) or Any field to match the combined text. " +
-                    "Rules of the same mode are OR'd; include is applied before exclude.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(4.dp))
-
-        filters.regexRules.forEachIndexed { index, rule ->
-            RegexRuleCard(
-                rule = rule,
-                onUpdate = { updated ->
-                    onUpdate(filters.copy(regexRules = filters.regexRules.toMutableList().also { it[index] = updated }))
-                },
-                onDelete = {
-                    onUpdate(filters.copy(regexRules = filters.regexRules.filterIndexed { i, _ -> i != index }))
-                },
+        // ── Advanced (Regex filter rules + Reset) ──────────────────────────────
+        var advancedExpanded by remember { mutableStateOf(filters.regexRules.isNotEmpty()) }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { advancedExpanded = !advancedExpanded }
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Advanced",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.height(4.dp))
+            Icon(
+                Icons.Default.ArrowDropDown,
+                contentDescription = if (advancedExpanded) "Collapse" else "Expand",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.rotate(if (advancedExpanded) 180f else 0f),
+            )
         }
-
-        OutlinedButton(
-            onClick = {
-                onUpdate(
-                    filters.copy(
-                        regexRules = filters.regexRules + RegexFilterRule(
-                            id = UUID.randomUUID().toString(),
-                            pattern = "",
-                            reverse = false,
-                            enabled = true,
-                        )
-                    )
+        AnimatedVisibility(visible = advancedExpanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                FilterSubheader("Regex filter rules")
+                Text(
+                    "\"Show matching\" keeps only problems matching the pattern. " +
+                            "\"Hide matching\" removes matching problems. " +
+                            "Choose a field (Host, Service, Status info) or Any field to match the combined text. " +
+                            "Rules of the same mode are OR'd; include is applied before exclude.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(4.dp))
-            Text("Add regex rule")
-        }
+                Spacer(Modifier.height(4.dp))
 
-        Spacer(Modifier.height(4.dp))
+                filters.regexRules.forEachIndexed { index, rule ->
+                    RegexRuleCard(
+                        rule = rule,
+                        onUpdate = { updated ->
+                            onUpdate(filters.copy(regexRules = filters.regexRules.toMutableList().also { it[index] = updated }))
+                        },
+                        onDelete = {
+                            onUpdate(filters.copy(regexRules = filters.regexRules.filterIndexed { i, _ -> i != index }))
+                        },
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
 
-        // ── Reset ──────────────────────────────────────────────────────────
-        OutlinedButton(
-            onClick = { onUpdate(FilterSettings()) },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("Reset all filters")
+                OutlinedButton(
+                    onClick = {
+                        onUpdate(
+                            filters.copy(
+                                regexRules = filters.regexRules + RegexFilterRule(
+                                    id = UUID.randomUUID().toString(),
+                                    pattern = "",
+                                    reverse = false,
+                                    enabled = true,
+                                )
+                            )
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Add regex rule")
+                }
+
+                Spacer(Modifier.height(4.dp))
+
+                OutlinedButton(
+                    onClick = { onUpdate(FilterSettings()) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Reset all filters")
+                }
+            }
         }
     }
 }

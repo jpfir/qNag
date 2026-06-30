@@ -89,6 +89,9 @@ private fun applyQuickFilter(problems: List<NagiosProblem>, filter: QuickFilter?
     } }
 }
 
+private val AlertListStyle.isClassicMode: Boolean
+    get() = this == AlertListStyle.CLASSIC_ROWS || this == AlertListStyle.CLASSIC_EXPANDED_ROWS
+
 // ── Problem list rows (for section headers) ───────────────────────────────────
 
 private sealed class ProblemListRow {
@@ -218,7 +221,8 @@ fun DashboardScreen(
     // The freshness guard skips the fetch when returning to the dashboard (e.g. from Settings)
     // if data was refreshed within AUTO_REFRESH_MIN_AGE_MS; it always fetches on scope change.
     val enabledInstanceIds = remember(allInstances) { enabledInstances.map { it.id } }
-    LaunchedEffect(selectedInstance, enabledInstanceIds) {
+    LaunchedEffect(selectedInstance, enabledInstanceIds, isMonitoringPaused) {
+        if (isMonitoringPaused) return@LaunchedEffect
         val requestedKey = when (val sel = selectedInstance) {
             is InstanceSelection.All -> "all:${enabledInstances.map { it.id }.sorted().joinToString(",")}"
             is InstanceSelection.Single -> "single:${sel.instance.id}"
@@ -244,7 +248,8 @@ fun DashboardScreen(
             notificationSettings.refreshIntervalMinutes.coerceAtLeast(15) * 60_000L
         }
     }
-    LaunchedEffect(selectedInstance, enabledInstanceIds, refreshMs) {
+    LaunchedEffect(selectedInstance, enabledInstanceIds, refreshMs, isMonitoringPaused) {
+        if (isMonitoringPaused) return@LaunchedEffect
         while (true) {
             delay(refreshMs)
             when (val sel = selectedInstance) {
@@ -399,6 +404,8 @@ fun DashboardScreen(
 
     // Stop monitoring confirmation dialog
     var showStopDialog by remember { mutableStateOf(false) }
+    // Dismiss the paused banner for the current session only (keeps monitoring paused)
+    var pauseBannerDismissed by remember { mutableStateOf(false) }
 
     pendingDowntimeProblems?.let { dtProblems ->
         DowntimeDialog(
@@ -732,20 +739,20 @@ fun DashboardScreen(
                 }
             }
 
-            if (isMonitoringPaused) {
+            if (isMonitoringPaused && !pauseBannerDismissed) {
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            "Monitoring paused",
+                            "qNag monitoring is paused",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "Auto refresh and boot startup are disabled until you resume.",
+                            "The service was stopped by you. Auto refresh and start on boot are disabled while paused.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Spacer(modifier = Modifier.height(10.dp))
@@ -753,6 +760,7 @@ fun DashboardScreen(
                             horizontalArrangement = Arrangement.End,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
+                            TextButton(onClick = { pauseBannerDismissed = true }) { Text("Keep paused") }
                             TextButton(onClick = onResumeMonitoring) { Text("Resume monitoring") }
                         }
                     }
@@ -912,7 +920,7 @@ private fun DashboardContent(
 
     Column(modifier = modifier) {
         if (summaries.isNotEmpty()) {
-            if (alertListStyle == AlertListStyle.CLASSIC_ROWS) {
+            if (alertListStyle.isClassicMode) {
                 ClassicInstancesSummary(
                     summaries = summaries,
                     enabledInstances = enabledInstances,
@@ -979,14 +987,12 @@ private fun DashboardContent(
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("No problems in current scope.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-            visible.isEmpty() && hiddenToShow.isEmpty() ->
+            visible.isEmpty() && hiddenToShow.isEmpty() && !(alertListStyle.isClassicMode && hiddenCount > 0) ->
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                    if (alertListStyle == AlertListStyle.CLASSIC_ROWS) {
+                    if (alertListStyle.isClassicMode) {
                         ClassicProblemsHeader(
                             visibleCount = 0,
                             hiddenCount = hiddenCount,
-                            showHidden = showHidden,
-                            onToggleShowHidden = onToggleShowHidden,
                         )
                     } else {
                         SummaryRow(
@@ -1028,13 +1034,14 @@ private fun DashboardContent(
                 onAckAllServicesOnHost = onAckAllServicesOnHost,
                 onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
                 isTier2Waiting = isTier2Waiting,
+                hiddenCount = hiddenCount,
+                showHidden = showHidden,
+                onToggleShowHidden = onToggleShowHidden,
                 header = {
-                    if (alertListStyle == AlertListStyle.CLASSIC_ROWS) {
+                    if (alertListStyle.isClassicMode) {
                         ClassicProblemsHeader(
                             visibleCount = visible.size,
                             hiddenCount = hiddenCount,
-                            showHidden = showHidden,
-                            onToggleShowHidden = onToggleShowHidden,
                         )
                     } else {
                         SummaryRow(
@@ -1083,6 +1090,9 @@ private fun ProblemList(
     isTier2Waiting: (NagiosProblem) -> Boolean = { false },
     hiddenProblems: List<NagiosProblem> = emptyList(),
     hiddenReasonsFor: (NagiosProblem) -> List<HiddenReason> = { emptyList() },
+    hiddenCount: Int = 0,
+    showHidden: Boolean = false,
+    onToggleShowHidden: (() -> Unit)? = null,
     header: @Composable () -> Unit,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
@@ -1100,17 +1110,110 @@ private fun ProblemList(
         }
     }
 
-    // Count active service problems per host+instance — used to show an impact hint on HOST DOWN cards.
-    // Computed once per rawProblems refresh (O(n)); not re-computed per card.
     val relatedServiceCounts = remember(rawProblems) {
         rawProblems.filterIsInstance<NagiosProblem.ServiceProblem>()
             .groupBy { "${it.instanceId}|${it.hostName}" }
             .mapValues { it.value.size }
     }
 
-    val rows = remember(problems, hiddenProblems) {
-        buildSectionedRows(problems) + buildHiddenRows(hiddenProblems, hiddenReasonsFor)
+    val isClassicMode = alertListStyle.isClassicMode
+    // Classic: visible rows only (hidden rows rendered separately below the toggle).
+    // Modern: visible + hidden rows combined in one list (existing behavior).
+    val rows = remember(problems, hiddenProblems, isClassicMode) {
+        if (!isClassicMode) buildSectionedRows(problems) + buildHiddenRows(hiddenProblems, hiddenReasonsFor)
+        else buildSectionedRows(problems)
     }
+    val classicHiddenRows = remember(hiddenProblems, isClassicMode) {
+        if (isClassicMode) buildHiddenRows(hiddenProblems, hiddenReasonsFor) else emptyList()
+    }
+
+    val rowKeyFn: (ProblemListRow) -> Any = { row -> when (row) {
+        is ProblemListRow.SectionHead -> "section_${row.label}"
+        is ProblemListRow.Item -> if (row.hiddenReasons.isEmpty()) problemKey(row.problem) else "hidden_${problemKey(row.problem)}"
+    }}
+
+    @Composable
+    fun RowItem(row: ProblemListRow) {
+        when (row) {
+            is ProblemListRow.SectionHead -> ProblemSectionHeader(row.label, row.count)
+            is ProblemListRow.Item -> {
+                val problem = row.problem
+                val key = problemKey(problem)
+                val locallyAcked = isLocallyAcknowledged(problem)
+                val hostTargets = resolveHostServiceTargets(problem, selectedInstance, currentInstance, enabledInstances, rawProblems)
+                val hasAckTargets = hostTargets.serviceTargets.any { !it.acknowledged && !isLocallyAcknowledged(it) }
+                val relatedCount = if (problem is NagiosProblem.HostProblem && problem.status == NagiosStatus.HOST_DOWN) {
+                    relatedServiceCounts["${problem.instanceId}|${problem.hostName}"] ?: 0
+                } else 0
+                val onCopyOutputFn: () -> Unit = {
+                    clipboardManager.setText(
+                        androidx.compose.ui.text.AnnotatedString(problem.pluginOutput)
+                    )
+                }
+                val onShareFn: () -> Unit = {
+                    val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(android.content.Intent.EXTRA_TEXT, buildAlertSummary(problem))
+                    }
+                    context.startActivity(android.content.Intent.createChooser(intent, "Share alert"))
+                }
+                when (alertListStyle) {
+                    AlertListStyle.CLASSIC_ROWS,
+                    AlertListStyle.CLASSIC_EXPANDED_ROWS -> ProblemClassicRow(
+                        problem = problem,
+                        isSelected = selectedIds.contains(key),
+                        isSelectionMode = isSelectionMode,
+                        isAcknowledged = problem.acknowledged || locallyAcked,
+                        isPendingAck = locallyAcked && !problem.acknowledged,
+                        instanceName = if (showInstanceNames) problem.instanceName else "",
+                        isRecheckPending = isRecheckPending(problem),
+                        hiddenReasons = row.hiddenReasons,
+                        relatedServiceCount = relatedCount,
+                        isTier2Waiting = isTier2Waiting(problem),
+                        swipeAllowed = swipeAllowed && !isSelectionMode,
+                        alwaysShowFullOutput = alertListStyle == AlertListStyle.CLASSIC_EXPANDED_ROWS,
+                        onOpenDetail = { onOpenProblemDetail(problem) },
+                        onCopyOutput = onCopyOutputFn,
+                        onShare = onShareFn,
+                        onUnack = if (problem.acknowledged || locallyAcked) { { onUnackProblem(problem) } } else null,
+                        onScheduleDowntime = { onScheduleDowntimeProblem(problem) },
+                        onAckAllServicesOnHost = if (hasAckTargets) { { onAckAllServicesOnHost(problem) } } else null,
+                        onRecheckAllServicesOnHost = if (hostTargets.serviceTargets.isNotEmpty()) { { onRecheckAllServicesOnHost(problem) } } else null,
+                        onToggleSelect = { onToggleSelect(key) },
+                        onLongPress = { onLongPress(key) },
+                        onAck = { onAckProblem(problem) },
+                        onRecheck = { onRecheckProblem(problem) },
+                    )
+                    else -> ProblemCard(
+                        problem = problem,
+                        isSelected = selectedIds.contains(key),
+                        isSelectionMode = isSelectionMode,
+                        isAcknowledged = problem.acknowledged || locallyAcked,
+                        isPendingAck = locallyAcked && !problem.acknowledged,
+                        instanceName = if (showInstanceNames) problem.instanceName else "",
+                        isRecheckPending = isRecheckPending(problem),
+                        hiddenReasons = row.hiddenReasons,
+                        relatedServiceCount = relatedCount,
+                        initialExpanded = alertListStyle == AlertListStyle.DETAILED_CARDS,
+                        swipeAllowed = swipeAllowed && !isSelectionMode,
+                        onOpenDetail = { onOpenProblemDetail(problem) },
+                        onCopyOutput = onCopyOutputFn,
+                        onShare = onShareFn,
+                        onUnack = if (problem.acknowledged || locallyAcked) { { onUnackProblem(problem) } } else null,
+                        onScheduleDowntime = { onScheduleDowntimeProblem(problem) },
+                        onAckAllServicesOnHost = if (hasAckTargets) { { onAckAllServicesOnHost(problem) } } else null,
+                        onRecheckAllServicesOnHost = if (hostTargets.serviceTargets.isNotEmpty()) { { onRecheckAllServicesOnHost(problem) } } else null,
+                        isTier2Waiting = isTier2Waiting(problem),
+                        onToggleSelect = { onToggleSelect(key) },
+                        onLongPress = { onLongPress(key) },
+                        onAck = { onAckProblem(problem) },
+                        onRecheck = { onRecheckProblem(problem) },
+                    )
+                }
+            }
+        }
+    }
+
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = onRefresh,
@@ -1118,86 +1221,32 @@ private fun ProblemList(
     ) {
         LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             item { header() }
-            items(rows, key = { row -> when (row) {
-                is ProblemListRow.SectionHead -> "section_${row.label}"
-                is ProblemListRow.Item -> if (row.hiddenReasons.isEmpty()) problemKey(row.problem) else "hidden_${problemKey(row.problem)}"
-            }}) { row ->
-                when (row) {
-                    is ProblemListRow.SectionHead -> ProblemSectionHeader(row.label, row.count)
-                    is ProblemListRow.Item -> {
-                        val problem = row.problem
-                        val key = problemKey(problem)
-                        val locallyAcked = isLocallyAcknowledged(problem)
-                        val hostTargets = resolveHostServiceTargets(problem, selectedInstance, currentInstance, enabledInstances, rawProblems)
-                        val hasAckTargets = hostTargets.serviceTargets.any { !it.acknowledged && !isLocallyAcknowledged(it) }
-                        val relatedCount = if (problem is NagiosProblem.HostProblem && problem.status == NagiosStatus.HOST_DOWN) {
-                            relatedServiceCounts["${problem.instanceId}|${problem.hostName}"] ?: 0
-                        } else 0
-                        val onCopyOutputFn: () -> Unit = {
-                            clipboardManager.setText(
-                                androidx.compose.ui.text.AnnotatedString(problem.pluginOutput)
-                            )
-                        }
-                        val onShareFn: () -> Unit = {
-                            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(android.content.Intent.EXTRA_TEXT, buildAlertSummary(problem))
-                            }
-                            context.startActivity(android.content.Intent.createChooser(intent, "Share alert"))
-                        }
-                        when (alertListStyle) {
-                            AlertListStyle.CLASSIC_ROWS -> ProblemClassicRow(
-                                problem = problem,
-                                isSelected = selectedIds.contains(key),
-                                isSelectionMode = isSelectionMode,
-                                isAcknowledged = problem.acknowledged || locallyAcked,
-                                isPendingAck = locallyAcked && !problem.acknowledged,
-                                instanceName = if (showInstanceNames) problem.instanceName else "",
-                                isRecheckPending = isRecheckPending(problem),
-                                hiddenReasons = row.hiddenReasons,
-                                relatedServiceCount = relatedCount,
-                                isTier2Waiting = isTier2Waiting(problem),
-                                swipeAllowed = swipeAllowed && !isSelectionMode,
-                                onOpenDetail = { onOpenProblemDetail(problem) },
-                                onCopyOutput = onCopyOutputFn,
-                                onShare = onShareFn,
-                                onUnack = if (problem.acknowledged || locallyAcked) { { onUnackProblem(problem) } } else null,
-                                onScheduleDowntime = { onScheduleDowntimeProblem(problem) },
-                                onAckAllServicesOnHost = if (hasAckTargets) { { onAckAllServicesOnHost(problem) } } else null,
-                                onRecheckAllServicesOnHost = if (hostTargets.serviceTargets.isNotEmpty()) { { onRecheckAllServicesOnHost(problem) } } else null,
-                                onToggleSelect = { onToggleSelect(key) },
-                                onLongPress = { onLongPress(key) },
-                                onAck = { onAckProblem(problem) },
-                                onRecheck = { onRecheckProblem(problem) },
-                            )
-                            else -> ProblemCard(
-                                problem = problem,
-                                isSelected = selectedIds.contains(key),
-                                isSelectionMode = isSelectionMode,
-                                isAcknowledged = problem.acknowledged || locallyAcked,
-                                isPendingAck = locallyAcked && !problem.acknowledged,
-                                instanceName = if (showInstanceNames) problem.instanceName else "",
-                                isRecheckPending = isRecheckPending(problem),
-                                hiddenReasons = row.hiddenReasons,
-                                relatedServiceCount = relatedCount,
-                                initialExpanded = alertListStyle == AlertListStyle.DETAILED_CARDS,
-                                swipeAllowed = swipeAllowed && !isSelectionMode,
-                                onOpenDetail = { onOpenProblemDetail(problem) },
-                                onCopyOutput = onCopyOutputFn,
-                                onShare = onShareFn,
-                                onUnack = if (problem.acknowledged || locallyAcked) { { onUnackProblem(problem) } } else null,
-                                onScheduleDowntime = { onScheduleDowntimeProblem(problem) },
-                                onAckAllServicesOnHost = if (hasAckTargets) { { onAckAllServicesOnHost(problem) } } else null,
-                                onRecheckAllServicesOnHost = if (hostTargets.serviceTargets.isNotEmpty()) { { onRecheckAllServicesOnHost(problem) } } else null,
-                                isTier2Waiting = isTier2Waiting(problem),
-                                onToggleSelect = { onToggleSelect(key) },
-                                onLongPress = { onLongPress(key) },
-                                onAck = { onAckProblem(problem) },
-                                onRecheck = { onRecheckProblem(problem) },
+            items(rows, key = rowKeyFn) { RowItem(it) }
+            if (isClassicMode) {
+                if (problems.isEmpty()) {
+                    item(key = "classic_no_visible") {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                "No visible problems.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
                 }
+                if (hiddenCount > 0) {
+                    item(key = "classic_hidden_toggle") {
+                        ClassicHiddenToggleRow(
+                            hiddenCount = hiddenCount,
+                            showHidden = showHidden,
+                            onToggle = onToggleShowHidden,
+                        )
+                    }
+                }
+                items(classicHiddenRows, key = rowKeyFn) { RowItem(it) }
             }
         }
     }
@@ -1540,53 +1589,59 @@ private fun ClassicInstancesSummary(
 private fun ClassicProblemsHeader(
     visibleCount: Int,
     hiddenCount: Int = 0,
-    showHidden: Boolean = false,
-    onToggleShowHidden: (() -> Unit)? = null,
 ) {
+    val totalCount = visibleCount + hiddenCount
     Column(modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "PROBLEMS",
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f),
-            )
-            if (visibleCount > 0) {
-                Text(
-                    "$visibleCount",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+        Text(
+            "PROBLEMS",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
         HorizontalDivider()
-        if (hiddenCount > 0 && onToggleShowHidden != null) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+        if (totalCount > 0) {
+            Text(
+                if (hiddenCount > 0) "$visibleCount visible / $totalCount total"
+                else "$visibleCount",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ClassicHiddenToggleRow(
+    hiddenCount: Int,
+    showHidden: Boolean,
+    onToggle: (() -> Unit)?,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 0.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "$hiddenCount hidden by filters",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        if (onToggle != null) {
+            TextButton(
+                onClick = onToggle,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
             ) {
                 Text(
-                    "$hiddenCount hidden by filters",
+                    if (showHidden) "Hide filtered" else "Show hidden",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
                 )
-                TextButton(
-                    onClick = onToggleShowHidden,
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                ) {
-                    Text(
-                        if (showHidden) "Hide filtered" else "Show hidden",
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
             }
         }
     }
+    HorizontalDivider()
 }
 
 private fun formatTime(millis: Long): String =

@@ -3,12 +3,14 @@ package com.exogroup.qnag.data
 enum class AlertListStyle {
     MODERN_CARDS,
     DETAILED_CARDS,
-    CLASSIC_ROWS;
+    CLASSIC_ROWS,
+    CLASSIC_EXPANDED_ROWS;
 
     val displayName: String get() = when (this) {
-        MODERN_CARDS   -> "Modern cards"
-        DETAILED_CARDS -> "Detailed cards"
-        CLASSIC_ROWS   -> "Classic rows"
+        MODERN_CARDS          -> "Modern cards"
+        DETAILED_CARDS        -> "Detailed cards"
+        CLASSIC_ROWS          -> "Classic rows"
+        CLASSIC_EXPANDED_ROWS -> "Classic expanded"
     }
 }
 

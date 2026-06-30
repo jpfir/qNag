@@ -41,6 +41,7 @@ import com.exogroup.qnag.ui.ExportInstancesDialog
 import com.exogroup.qnag.ui.ImportPreviewDialog
 import com.exogroup.qnag.ui.ProblemDetailScreen
 import com.exogroup.qnag.ui.ReliabilityChecklistScreen
+import com.exogroup.qnag.ui.SettingsDestination
 import com.exogroup.qnag.ui.SettingsScreen
 import com.exogroup.qnag.ui.WelcomeScreen
 import com.exogroup.qnag.widget.WidgetRefresher
@@ -55,7 +56,10 @@ private sealed class AppScreen {
     object AddInstance : AppScreen()
     data class ReliabilityChecklist(val dashboardInstance: NagiosInstance) : AppScreen()
     data class Dashboard(val instance: NagiosInstance) : AppScreen()
-    data class Settings(val fromInstance: NagiosInstance) : AppScreen()
+    data class Settings(
+        val fromInstance: NagiosInstance,
+        val initialDestination: SettingsDestination = SettingsDestination.HOME,
+    ) : AppScreen()
     data class ProblemDetail(
         val problem: NagiosProblem,
         val instance: NagiosInstance?,
@@ -347,7 +351,7 @@ class MainActivity : ComponentActivity() {
                                 alertListStyle = appSettings.alertListStyle,
                                 onSwitchInstance = { screen = AppScreen.Dashboard(it) },
                                 onAddNewInstance = { screen = AppScreen.AddInstance },
-                                onManageInstances = { screen = AppScreen.Settings(s.instance) },
+                                onManageInstances = { screen = AppScreen.Settings(s.instance, SettingsDestination.INSTANCES) },
                                 onOpenSettings = { screen = AppScreen.Settings(s.instance) },
                                 onOpenCommandActivity = { screen = AppScreen.CommandActivity(s.instance) },
                                 isMonitoringPaused = monitoringPaused,
@@ -430,6 +434,7 @@ class MainActivity : ComponentActivity() {
                                         else -> AppScreen.Dashboard(enabled.first())
                                     }
                                 },
+                                initialDestination = s.initialDestination,
                                 onImportInstances = {
                                     importLauncher.launch(arrayOf("application/json", "*/*"))
                                 },

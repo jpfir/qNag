@@ -1,11 +1,16 @@
 package com.exogroup.qnag.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.exogroup.qnag.data.CommandSettings
 import com.exogroup.qnag.data.NagiosDateFormat
@@ -199,19 +204,46 @@ fun CommandSettingsSection(
         )
 
         Spacer(Modifier.height(4.dp))
-        CmdSubheader("Diagnostics")
 
-        CmdRow(
-            label = "Debug command submission (logs safe info only)",
-            checked = settings.debugCommandSubmission,
-            onCheckedChange = { onUpdate(settings.copy(debugCommandSubmission = it)) },
-        )
-        Text(
-            "When enabled, logs command kind, field names, HTTP status, and a sanitized response " +
-                    "snippet to logcat (tag: qNag). Never logs passwords, cookies, or Authorization headers.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // ── Advanced (Diagnostics) ─────────────────────────────────────────────
+        var advancedExpanded by remember { mutableStateOf(false) }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { advancedExpanded = !advancedExpanded }
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Advanced",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                Icons.Default.ArrowDropDown,
+                contentDescription = if (advancedExpanded) "Collapse" else "Expand",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.rotate(if (advancedExpanded) 180f else 0f),
+            )
+        }
+        AnimatedVisibility(visible = advancedExpanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                CmdSubheader("Diagnostics")
+                CmdRow(
+                    label = "Debug command submission (logs safe info only)",
+                    checked = settings.debugCommandSubmission,
+                    onCheckedChange = { onUpdate(settings.copy(debugCommandSubmission = it)) },
+                )
+                Text(
+                    "When enabled, logs command kind, field names, HTTP status, and a sanitized response " +
+                            "snippet to logcat (tag: qNag). Never logs passwords, cookies, or Authorization headers.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
