@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.data.SecureInstanceStore
+import com.exogroup.qnag.data.UserMonitoringPause
 import com.exogroup.qnag.worker.BackgroundPollingScheduler
 
 /**
@@ -27,6 +28,7 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED -> {
                 MonitoringHealth.recordBootOrUpdate(context)
+                if (UserMonitoringPause.isPaused(context)) return
                 val store = SecureInstanceStore(context)
                 val settings = store.getAppSettings()
                 val instances = store.getInstances()

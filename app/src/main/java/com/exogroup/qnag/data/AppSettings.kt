@@ -1,5 +1,17 @@
 package com.exogroup.qnag.data
 
+enum class AlertListStyle {
+    MODERN_CARDS,
+    DETAILED_CARDS,
+    CLASSIC_ROWS;
+
+    val displayName: String get() = when (this) {
+        MODERN_CARDS   -> "Modern cards"
+        DETAILED_CARDS -> "Detailed cards"
+        CLASSIC_ROWS   -> "Classic rows"
+    }
+}
+
 data class AppSettings(
     val filterSettings: FilterSettings = FilterSettings(),
     val notificationSettings: NotificationSettings = NotificationSettings(),
@@ -10,4 +22,5 @@ data class AppSettings(
     // Defaults to "ALL" so existing users with multiple instances get the merged view.
     val selectedDashboardScope: String = "ALL",
     val summaryExpanded: Boolean = true,
+    val alertListStyle: AlertListStyle = AlertListStyle.CLASSIC_ROWS,
 )

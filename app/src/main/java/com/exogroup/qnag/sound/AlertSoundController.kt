@@ -1,6 +1,7 @@
 package com.exogroup.qnag.sound
 
 import android.content.Context
+import com.exogroup.qnag.data.AckSuppressCache
 import com.exogroup.qnag.data.AlertSoundMode
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
@@ -66,6 +67,8 @@ object AlertSoundController {
      * Evaluate the current poll results and play a sound if the alert state is new/worse.
      *
      * @param allCurrentProblems All problems that passed notification filters this poll.
+     *   ACKed problems (server-side or local AckSuppressCache overlay) are excluded from
+     *   fingerprints and severity before sound decisions are made.
      * @param newProblems        Subset that are new/changed this poll (used for debug).
      * @param failedInstanceNames Instance names whose fetch failed this poll.
      * @param settings           Current notification settings.
@@ -79,10 +82,18 @@ object AlertSoundController {
         settings: NotificationSettings,
         debug: Boolean = false,
     ): Boolean {
-        val currentSeverity = computeWorstSeverity(allCurrentProblems, failedInstanceNames.size)
+        // ACKed problems never trigger or sustain sound — this prevents repeatSameProblemSound
+        // from re-firing for acknowledged alerts regardless of notifyOnlyUnacknowledged setting.
+        // Both server-side ACK (problem.acknowledged) and local optimistic ACK overlay are checked.
+        val soundProblems = allCurrentProblems.filter { ptn ->
+            !ptn.problem.acknowledged &&
+            !AckSuppressCache.isSuppressed(context, ptn.instanceId, ptn.problem)
+        }
+
+        val currentSeverity = computeWorstSeverity(soundProblems, failedInstanceNames.size)
 
         // Build fingerprint set: problems (with status) + fetch failures
-        val problemFps  = allCurrentProblems.map { p ->
+        val problemFps  = soundProblems.map { p ->
             p.instanceId + SEP + p.problem.uniqueId + SEP + p.problem.status
         }.toSet()
         val failureFps  = failedInstanceNames.map { "fetch_fail${SEP}$it" }.toSet()

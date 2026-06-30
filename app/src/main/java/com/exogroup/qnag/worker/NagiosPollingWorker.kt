@@ -11,6 +11,8 @@ import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.data.NagiosApi
 import com.exogroup.qnag.data.NagiosFetchRetry
 import com.exogroup.qnag.data.NagiosProblem
+import com.exogroup.qnag.data.NagiosStatusSummary
+import com.exogroup.qnag.data.UserMonitoringPause
 import com.exogroup.qnag.data.NotificationDecisionReason
 import com.exogroup.qnag.data.NotificationMode
 import com.exogroup.qnag.data.ProblemAgeStore
@@ -50,6 +52,8 @@ class NagiosPollingWorker(
     private val gson = Gson()
 
     override suspend fun doWork(): Result {
+        if (UserMonitoringPause.isPaused(applicationContext)) return Result.success()
+
         val store = SecureInstanceStore(applicationContext)
         val instances = store.getInstances()
         val settings = store.getAppSettings()
@@ -75,6 +79,7 @@ class NagiosPollingWorker(
         val widgetInstanceSummaries = mutableListOf<WidgetInstanceSummary>()
         var widgetFailCount = 0                                    // instances that threw during widget fetch
         val failedInstanceNames = mutableListOf<String>()         // names of instances that failed
+        val statusSummaries = mutableListOf<NagiosStatusSummary>()
         val prevTier2WaitingFps = loadTier2WaitingFps()
         val newTier2WaitingFps  = mutableSetOf<String>()
         // Collect age keys across ALL instances before pruning so one instance's
@@ -140,6 +145,11 @@ class NagiosPollingWorker(
 
                 MonitoringHealth.recordPollSuccess(applicationContext)
 
+                // Best-effort totals fetch — short timeout, must not block alerting or fail instance
+                runCatching {
+                    withContext(Dispatchers.IO) { api.fetchStatusSummary(instance) }
+                }.getOrNull()?.also { statusSummaries += it }
+
                 // Recovery: clear failure state
                 if (instance.id in failedInstanceIds) {
                     failedInstanceIds = failedInstanceIds - instance.id
@@ -194,6 +204,7 @@ class NagiosPollingWorker(
                     failedInstances = failedInstanceNames,
                     instanceTotal   = targets.size,
                     lastUpdated     = System.currentTimeMillis(),
+                    statusSummaries = statusSummaries,
                 )
                 NotificationHelper.postWearableAlertPulse(applicationContext, compactSummary, visualState, notifSettings)
             } else if (allCurrentProblems.isEmpty() && failedInstanceNames.isEmpty()) {
@@ -240,6 +251,7 @@ class NagiosPollingWorker(
             WidgetSnapshotStore.saveAndRefreshWidgets(
                 applicationContext, allFilteredProblems, System.currentTimeMillis(),
                 widgetSourceTitle, widgetInstanceSummaries, instanceFailed = widgetFailCount,
+                statusSummaries = statusSummaries,
             )
         }
 

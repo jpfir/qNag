@@ -412,7 +412,7 @@ object NotificationHelper {
         if (shouldAlert) {
             prefs.edit().putLong("last_notified_ms", now).putInt("prev_failed_count", failedCount).apply()
         }
-        val title = "qNag refresh failure"
+        val title = "qNag FAILURE"
         val text  = if (failedCount >= totalCount && totalCount > 0)
             "All $totalCount instances failed to update"
         else
@@ -449,7 +449,7 @@ object NotificationHelper {
             if (svcUnk   > 0) "$svcUnk unknown" else null,
             if (failedCount > 0) "$failedCount instance${if (failedCount > 1) "s" else ""} failed" else null,
         )
-        return if (parts.isEmpty()) "qNag: all green" else "qNag: ${parts.joinToString(", ")}"
+        return if (parts.isEmpty()) "qNag: all clear" else "qNag: ${parts.take(2).joinToString(" · ")}"
     }
 
     private fun worstSeverity(hostDown: Int, hostUnr: Int, svcCrit: Int, svcWarn: Int, svcUnk: Int): Int = when {
@@ -673,11 +673,7 @@ object NotificationHelper {
         val wearableDetail = notifSettings?.wearableNotifDetail
             ?: com.exogroup.qnag.data.WearableNotifDetail.TOP_PROBLEM_PLUS_SUMMARY
 
-        // Title: "qNag FAILURE" or "qNag · {sourceTitle}"
-        val notifTitle = when {
-            summary.isFullFailure || summary.isPartialFailure -> "qNag FAILURE"
-            else -> "qNag  ·  $sourceTitle"
-        }
+        val notifTitle = summary.toNotificationTitle(hideDetails)
         // ContentText: compact one-liner for watch
         val contentText = summary.toOneLineText()
         // BigText: top problem + summary (wearable detail setting)
@@ -742,11 +738,7 @@ object NotificationHelper {
         val hideDetails = settings.hideDetailsOnLockScreen
         val wearableDetail = settings.wearableNotifDetail
 
-        val notifTitle = when {
-            summary.isFullFailure || summary.isPartialFailure -> "qNag FAILURE"
-            hideDetails -> "qNag alert"
-            else -> "qNag  ·  ${summary.sourceTitle}"
-        }
+        val notifTitle = summary.toNotificationTitle(hideDetails)
         val contentText = summary.toOneLineText()
         val bigText = when {
             hideDetails -> summary.toBigText()

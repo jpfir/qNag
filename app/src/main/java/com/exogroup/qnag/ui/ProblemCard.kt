@@ -1,14 +1,9 @@
 package com.exogroup.qnag.ui
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,15 +15,10 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.exogroup.qnag.data.HiddenReason
 import com.exogroup.qnag.data.NagiosProblem
@@ -36,8 +26,6 @@ import com.exogroup.qnag.data.NagiosStatus
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.abs
-import kotlin.math.roundToInt
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -59,6 +47,8 @@ fun ProblemCard(
     hiddenReasons: List<HiddenReason> = emptyList(),
     // Active service problem count on the same host+instance — shown as a hint on HOST DOWN cards
     relatedServiceCount: Int = 0,
+    // When true the card starts in the expanded state (used for DETAILED_CARDS style)
+    initialExpanded: Boolean = false,
     // False while the list is scrolling or within 250 ms of scroll stop; also false in selection mode
     swipeAllowed: Boolean = true,
     onOpenDetail: (() -> Unit)? = null,
@@ -75,26 +65,8 @@ fun ProblemCard(
     onAck: () -> Unit,
     onRecheck: () -> Unit,
 ) {
-    var isExpanded by remember { mutableStateOf(false) }
-    var commandLocked by remember { mutableStateOf(false) }
-    var gestureAllowed by remember { mutableStateOf(false) }
-    var isDragging by remember { mutableStateOf(false) }
-    var dragOffsetPx by remember { mutableFloatStateOf(0f) }
-    val offsetAnim = remember { Animatable(0f) }
-
-    // During drag show the raw unthrottled position; during return animation show the animated value.
-    val visualOffset = if (isDragging) dragOffsetPx else offsetAnim.value
-
-    // Reset stale swipe state when the card identity or selection mode changes.
-    // Guards against the card remaining offset or locked after a list refresh or mode toggle.
-    val problemKey = "${problem.uniqueId}|${problem.instanceId}"
-    LaunchedEffect(problemKey, isSelectionMode) {
-        if (!isDragging) {
-            dragOffsetPx = 0f
-            gestureAllowed = false
-            commandLocked = false
-            offsetAnim.snapTo(0f)
-        }
+    var isExpanded by remember(problem.uniqueId, problem.instanceId, initialExpanded) {
+        mutableStateOf(initialExpanded)
     }
 
     val (rawContainerColor, rawContentColor) = problemColors(problem)
@@ -107,132 +79,55 @@ fun ProblemCard(
     }
     val contentColor = if (isHidden) rawContentColor.copy(alpha = 0.55f) else rawContentColor
 
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val density = LocalDensity.current
-        val widthPx = with(density) { maxWidth.toPx() }
-        val thresholdPx = widthPx * 0.45f
-        val maxSwipePx = widthPx * 0.55f
-
-        val draggableState = rememberDraggableState { delta ->
-            if (!gestureAllowed) return@rememberDraggableState
-            dragOffsetPx = (dragOffsetPx + delta).coerceIn(-maxSwipePx, maxSwipePx)
-        }
-
-        val progress = (abs(visualOffset) / thresholdPx).coerceIn(0f, 1f)
-        val backgroundColor = when {
-            visualOffset > 0f -> Color(0xFF1976D2).copy(alpha = 0.25f + progress * 0.75f)
-            visualOffset < 0f -> Color(0xFF388E3C).copy(alpha = 0.25f + progress * 0.75f)
-            else -> Color.Transparent
-        }
-
-        Box(modifier = Modifier.fillMaxWidth()) {
-            // Swipe command background — reveals action colour and icon behind the sliding card
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .padding(vertical = 4.dp)
-                    .background(backgroundColor, shape = CardDefaults.shape),
-                contentAlignment = if (visualOffset > 0f) Alignment.CenterStart else Alignment.CenterEnd,
-            ) {
-                when {
-                    visualOffset > 0f -> Icon(
-                        Icons.Default.Refresh, contentDescription = "Recheck",
-                        tint = Color.White,
-                        modifier = Modifier.padding(start = 24.dp),
-                    )
-                    visualOffset < 0f -> Icon(
-                        Icons.Default.Check, contentDescription = "Acknowledge",
-                        tint = Color.White,
-                        modifier = Modifier.padding(end = 24.dp),
-                    )
-                }
-            }
-
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp)
-                    .offset { IntOffset(visualOffset.roundToInt(), 0) }
-                    .draggable(
-                        state = draggableState,
-                        orientation = Orientation.Horizontal,
-                        enabled = !isSelectionMode,
-                        onDragStarted = {
-                            gestureAllowed = swipeAllowed && !isSelectionMode && !commandLocked
-                            isDragging = gestureAllowed
-                        },
-                        onDragStopped = {
-                            val finalOffset = dragOffsetPx
-                            val action = when {
-                                gestureAllowed && !commandLocked && abs(finalOffset) >= thresholdPx && finalOffset > 0f -> "recheck"
-                                gestureAllowed && !commandLocked && abs(finalOffset) >= thresholdPx && finalOffset < 0f -> "ack"
-                                else -> null
-                            }
-                            val shouldLock = action != null
-                            if (shouldLock) commandLocked = true
-
-                            try {
-                                // Sync animation to drag position before clearing isDragging — no visual jump.
-                                offsetAnim.snapTo(finalOffset)
-                                isDragging = false
-                                dragOffsetPx = 0f
-                                gestureAllowed = false
-
-                                // Fire command immediately and safely; failures surface via Command Activity.
-                                if (action == "recheck") runCatching { onRecheck() }
-                                else if (action == "ack") runCatching { onAck() }
-
-                                offsetAnim.animateTo(0f, animationSpec = tween(durationMillis = 180))
-
-                                if (shouldLock) {
-                                    delay(120L)
-                                    commandLocked = false
-                                }
-                            } finally {
-                                // Runs on cancellation (e.g. card leaves composition mid-animation).
-                                isDragging = false
-                                dragOffsetPx = 0f
-                                gestureAllowed = false
-                                if (shouldLock) commandLocked = false
-                                withContext(NonCancellable) { offsetAnim.snapTo(0f) }
-                            }
-                        },
-                    )
-                    .combinedClickable(
-                        onClick = {
-                            if (isSelectionMode) onToggleSelect()
-                            else isExpanded = !isExpanded
-                        },
-                        onLongClick = onLongPress,
-                    ),
-                colors = CardDefaults.cardColors(
-                    containerColor = containerColor,
-                    contentColor = contentColor,
+    val problemKey = "${problem.uniqueId}|${problem.instanceId}"
+    CommandSwipeContainer(
+        problemKey = problemKey,
+        isSelectionMode = isSelectionMode,
+        swipeAllowed = swipeAllowed,
+        onAck = onAck,
+        onRecheck = onRecheck,
+        backgroundPaddingVertical = 4.dp,
+        backgroundShape = CardDefaults.shape,
+        swipeIconHorizontalPadding = 24.dp,
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .combinedClickable(
+                    onClick = {
+                        if (isSelectionMode) onToggleSelect()
+                        else isExpanded = !isExpanded
+                    },
+                    onLongClick = onLongPress,
                 ),
-                border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
-            ) {
-                ProblemCardContent(
-                    problem = problem,
-                    isExpanded = isExpanded,
-                    isAcknowledged = isAcknowledged,
-                    isPendingAck = isPendingAck,
-                    instanceName = instanceName,
-                    isRecheckPending = isRecheckPending,
-                    isTier2Waiting = isTier2Waiting,
-                    hiddenReasons = hiddenReasons,
-                    relatedServiceCount = relatedServiceCount,
-                    onUnack = onUnack,
-                    onAck = onAck,
-                    onRecheck = onRecheck,
-                    onOpenDetail = onOpenDetail,
-                    onCopyOutput = onCopyOutput,
-                    onShare = onShare,
-                    onOpenInNagios = onOpenInNagios,
-                    onScheduleDowntime = onScheduleDowntime,
-                    onAckAllServicesOnHost = onAckAllServicesOnHost,
-                    onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
-                )
-            }
+            colors = CardDefaults.cardColors(
+                containerColor = containerColor,
+                contentColor = contentColor,
+            ),
+            border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+        ) {
+            ProblemCardContent(
+                problem = problem,
+                isExpanded = isExpanded,
+                isAcknowledged = isAcknowledged,
+                isPendingAck = isPendingAck,
+                instanceName = instanceName,
+                isRecheckPending = isRecheckPending,
+                isTier2Waiting = isTier2Waiting,
+                hiddenReasons = hiddenReasons,
+                relatedServiceCount = relatedServiceCount,
+                onUnack = onUnack,
+                onAck = onAck,
+                onRecheck = onRecheck,
+                onOpenDetail = onOpenDetail,
+                onCopyOutput = onCopyOutput,
+                onShare = onShare,
+                onOpenInNagios = onOpenInNagios,
+                onScheduleDowntime = onScheduleDowntime,
+                onAckAllServicesOnHost = onAckAllServicesOnHost,
+                onRecheckAllServicesOnHost = onRecheckAllServicesOnHost,
+            )
         }
     }
 }

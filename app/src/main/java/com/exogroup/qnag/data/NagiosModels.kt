@@ -25,6 +25,20 @@ object NagiosStatus {
     const val HOST_UNREACHABLE = 8
 }
 
+data class NagiosStatusSummary(
+    val instanceId: String,
+    val hostTotal: Int?,
+    val hostUp: Int?,
+    val hostDown: Int,
+    val hostUnreachable: Int,
+    val serviceTotal: Int?,
+    val serviceOk: Int?,
+    val serviceCritical: Int,
+    val serviceWarning: Int,
+    val serviceUnknown: Int,
+    val fetchedAt: Long,
+)
+
 sealed class NagiosProblem {
     abstract val hostName: String
     abstract val pluginOutput: String

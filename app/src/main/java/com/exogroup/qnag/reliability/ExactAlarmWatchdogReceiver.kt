@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.data.SecureInstanceStore
+import com.exogroup.qnag.data.UserMonitoringPause
 import com.exogroup.qnag.notifications.NotificationHelper
 import com.exogroup.qnag.service.NagiosMonitoringService
 import com.exogroup.qnag.worker.BackgroundPollingScheduler
@@ -28,6 +29,12 @@ class ExactAlarmWatchdogReceiver : BroadcastReceiver() {
         if (intent.action != ExactAlarmWatchdogScheduler.ACTION) return
 
         MonitoringHealth.recordExactAlarmFired(context, "fired")
+
+        if (UserMonitoringPause.isPaused(context)) {
+            ExactAlarmWatchdogScheduler.cancel(context)
+            MonitoringHealth.recordExactAlarmFired(context, "paused_by_user_canceled")
+            return
+        }
 
         val store = SecureInstanceStore(context)
         val settings = store.getAppSettings()

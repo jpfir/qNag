@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -30,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.exogroup.qnag.R
+import com.exogroup.qnag.data.AlertListStyle
 import com.exogroup.qnag.data.CommandSettings
 import com.exogroup.qnag.data.FilterSettings
 import com.exogroup.qnag.data.NagiosInstance
@@ -56,6 +58,7 @@ private data class SettingsItem(
     val subtitle: String,
     val destination: String,
     val keywords: List<String>,
+    val isAdvanced: Boolean = false,
 )
 
 private val SETTINGS_INDEX = listOf(
@@ -130,7 +133,10 @@ private val SETTINGS_INDEX = listOf(
         listOf("wearable", "watch", "smartwatch", "galaxy watch", "wear", "galaxy fit", "samsung",
                "samsung wearable", "test notification", "wear os")),
 
-    // ── Filters ───────────────────────────────────────────────────────────────
+    // ── Filters & Display ─────────────────────────────────────────────────────
+    SettingsItem("Alert list style", "Filters & Display", NAV_FILTERS,
+        listOf("layout", "list", "cards", "classic", "anag", "compact", "detailed", "row",
+               "modern", "dense", "style", "alert list", "view", "display")),
     SettingsItem("Hide acknowledged", "Filters & Display", NAV_FILTERS,
         listOf("acknowledged", "ack", "hide", "filter")),
     SettingsItem("Soft state / hard state filter", "Filters & Display", NAV_FILTERS,
@@ -148,13 +154,15 @@ private val SETTINGS_INDEX = listOf(
     SettingsItem("Export instances", "Import / Export", NAV_IMPORT_EXPORT,
         listOf("export", "backup", "save", "json", "instances", "file")),
 
-    // ── Command Activity ──────────────────────────────────────────────────────
-    SettingsItem("Command Activity", "Command Activity", NAV_COMMAND_ACTIVITY,
-        listOf("command", "activity", "ack", "recheck", "downtime", "history", "status", "running", "failed")),
+    // ── Command Activity (advanced) ───────────────────────────────────────────
+    SettingsItem("Command Activity", "Advanced", NAV_COMMAND_ACTIVITY,
+        listOf("command", "activity", "ack", "recheck", "downtime", "history", "status", "running", "failed"),
+        isAdvanced = true),
 
-    // ── Event Log ─────────────────────────────────────────────────────────────
-    SettingsItem("Event Log", "Event Log", NAV_EVENT_LOG,
-        listOf("log", "event", "debug", "troubleshoot", "history", "polling", "watchdog", "events")),
+    // ── Event Log (advanced) ──────────────────────────────────────────────────
+    SettingsItem("Event Log", "Advanced", NAV_EVENT_LOG,
+        listOf("log", "event", "debug", "troubleshoot", "history", "polling", "watchdog", "events"),
+        isAdvanced = true),
 
     // ── About ─────────────────────────────────────────────────────────────────
     SettingsItem("About qNag", "About", NAV_ABOUT,
@@ -182,6 +190,8 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onImportInstances: (() -> Unit)? = null,
     onExportInstances: (() -> Unit)? = null,
+    alertListStyle: AlertListStyle = AlertListStyle.CLASSIC_ROWS,
+    onUpdateAlertListStyle: (AlertListStyle) -> Unit = {},
     initialNav: String = NAV_HOME,
 ) {
     var nav by rememberSaveable { mutableStateOf(initialNav) }
@@ -219,7 +229,12 @@ fun SettingsScreen(
             )
         }
         NAV_FILTERS -> SettingsSubScreen("Filters & Display", onBack = { nav = NAV_HOME }) {
-            FilterSettingsSection(filters = filterSettings, onUpdate = onUpdateFilterSettings)
+            FilterSettingsSection(
+                filters = filterSettings,
+                onUpdate = onUpdateFilterSettings,
+                alertListStyle = alertListStyle,
+                onUpdateAlertListStyle = onUpdateAlertListStyle,
+            )
         }
         NAV_COMMANDS -> SettingsSubScreen("Commands", onBack = { nav = NAV_HOME }) {
             CommandSettingsSection(
@@ -258,6 +273,7 @@ private fun SettingsHome(
     onBack: () -> Unit,
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var advancedExpanded by remember { mutableStateOf(false) }
     val filteredItems = remember(searchQuery) {
         if (searchQuery.isBlank()) emptyList()
         else {
@@ -321,7 +337,7 @@ private fun SettingsHome(
                     }
                 }
             } else {
-                // Category cards — ordered per the v1.0.6 proposed structure
+                // Category cards
                 item { SettingsNavItem("Instances",
                     "Add, edit, and configure Nagios instances",
                     NAV_INSTANCES, onNavigate) }
@@ -338,20 +354,29 @@ private fun SettingsHome(
                     "Foreground service, watchdog, battery, monitoring health",
                     NAV_RELIABILITY, onNavigate) }
                 item { SettingsNavItem("Filters & Display",
-                    "Dashboard visibility filters and regex rules",
+                    "Alert list style, visibility filters, and regex rules",
                     NAV_FILTERS, onNavigate) }
                 item { SettingsNavItem("Import / Export",
                     "Import and export instance configuration",
                     NAV_IMPORT_EXPORT, onNavigate) }
-                item { SettingsNavItem("Command Activity",
-                    "Recent ACK, recheck and downtime commands",
-                    NAV_COMMAND_ACTIVITY, onNavigate) }
                 item { SettingsNavItem("About",
                     "App version and info",
                     NAV_ABOUT, onNavigate) }
-                item { SettingsNavItem("Event Log",
-                    "In-app log of polling, commands, and reliability events",
-                    NAV_EVENT_LOG, onNavigate) }
+                // Advanced section
+                item {
+                    AdvancedSectionHeader(
+                        expanded = advancedExpanded,
+                        onToggle = { advancedExpanded = !advancedExpanded },
+                    )
+                }
+                if (advancedExpanded) {
+                    item { SettingsNavItem("Command Activity",
+                        "Recent ACK, recheck and downtime commands",
+                        NAV_COMMAND_ACTIVITY, onNavigate) }
+                    item { SettingsNavItem("Event Log",
+                        "In-app log of polling, commands, and reliability events",
+                        NAV_EVENT_LOG, onNavigate) }
+                }
                 item { Spacer(Modifier.height(32.dp)) }
             }
         }
@@ -388,13 +413,41 @@ private fun SettingsNavItem(
 
 @Composable
 private fun SearchResultRow(item: SettingsItem, onClick: () -> Unit) {
+    val subtitle = if (item.isAdvanced && !item.subtitle.startsWith("Advanced"))
+        "Advanced / ${item.subtitle}" else item.subtitle
     ListItem(
         headlineContent = { Text(item.title) },
-        supportingContent = { Text(item.subtitle, style = MaterialTheme.typography.bodySmall) },
+        supportingContent = { Text(subtitle, style = MaterialTheme.typography.bodySmall) },
         trailingContent = { Icon(Icons.AutoMirrored.Filled.ArrowForward, null) },
         modifier = Modifier.clickable(onClick = onClick),
     )
     HorizontalDivider()
+}
+
+@Composable
+private fun AdvancedSectionHeader(expanded: Boolean, onToggle: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            "Advanced",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Icon(
+            if (expanded) Icons.Default.ArrowDropDown else Icons.AutoMirrored.Filled.ArrowForward,
+            contentDescription = if (expanded) "Collapse advanced" else "Expand advanced",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp),
+        )
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
 // ── Sub-screen wrapper ────────────────────────────────────────────────────────

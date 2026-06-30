@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.exogroup.qnag.data.AlertListStyle
 import com.exogroup.qnag.data.FilterSettings
 import com.exogroup.qnag.data.RegexFilterField
 import com.exogroup.qnag.data.RegexFilterRule
@@ -27,8 +28,34 @@ import java.util.UUID
 fun FilterSettingsSection(
     filters: FilterSettings,
     onUpdate: (FilterSettings) -> Unit,
+    alertListStyle: AlertListStyle = AlertListStyle.CLASSIC_ROWS,
+    onUpdateAlertListStyle: (AlertListStyle) -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+
+        // ── Alert list style ───────────────────────────────────────────────
+        FilterSubheader("Alert list style")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            AlertListStyle.entries.forEach { style ->
+                FilterChip(
+                    selected = alertListStyle == style,
+                    onClick = { onUpdateAlertListStyle(style) },
+                    label = { Text(style.displayName, maxLines = 1, overflow = TextOverflow.Clip) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        Text(
+            "Modern cards: standard qNag layout with swipe gestures. " +
+            "Detailed cards: same layout, expanded by default. " +
+            "Classic rows: dense aNag-style rows — tap to expand inline details and actions.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
 
         // ── Status filters ─────────────────────────────────────────────────
         FilterSubheader("Status")

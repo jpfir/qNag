@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.core.content.edit
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
+import com.exogroup.qnag.data.NagiosStatusSummary
 import com.google.gson.Gson
 
 enum class WidgetRefreshState { IDLE, REFRESHING, FAILED }
@@ -78,11 +79,13 @@ object WidgetSnapshotStore {
         refreshState: WidgetRefreshState = WidgetRefreshState.IDLE,
         lastRefreshError: String? = null,
         noEnabledInstances: Boolean = false,
+        statusSummaries: List<NagiosStatusSummary> = emptyList(),
     ) {
         val snapshot = buildSnapshot(
             problems, lastUpdated, sourceTitle,
             instanceSummaries, instanceFailed,
             refreshState, lastRefreshError, noEnabledInstances,
+            statusSummaries,
         )
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit { putString(KEY_SNAPSHOT, Gson().toJson(snapshot)) }
@@ -105,9 +108,10 @@ object WidgetSnapshotStore {
         refreshState: WidgetRefreshState = WidgetRefreshState.IDLE,
         lastRefreshError: String? = null,
         noEnabledInstances: Boolean = false,
+        statusSummaries: List<NagiosStatusSummary> = emptyList(),
     ) {
         save(context, problems, lastUpdated, sourceTitle, instanceSummaries,
-            instanceFailed, refreshState, lastRefreshError, noEnabledInstances)
+            instanceFailed, refreshState, lastRefreshError, noEnabledInstances, statusSummaries)
         WidgetUpdater.updateAll(context)
     }
 
@@ -151,6 +155,7 @@ object WidgetSnapshotStore {
         refreshState: WidgetRefreshState,
         lastRefreshError: String?,
         noEnabledInstances: Boolean,
+        statusSummaries: List<NagiosStatusSummary> = emptyList(),
     ): WidgetStatusSnapshot {
         val down        = problems.count { it is NagiosProblem.HostProblem    && it.status == NagiosStatus.HOST_DOWN }
         val unreachable = problems.count { it is NagiosProblem.HostProblem    && it.status == NagiosStatus.HOST_UNREACHABLE }
@@ -171,6 +176,11 @@ object WidgetSnapshotStore {
             )
         }
 
+        val aggHostTotal    = statusSummaries.mapNotNull { it.hostTotal }.reduceOrNull { a, b -> a + b }
+        val aggHostUp       = statusSummaries.mapNotNull { it.hostUp }.reduceOrNull { a, b -> a + b }
+        val aggServiceTotal = statusSummaries.mapNotNull { it.serviceTotal }.reduceOrNull { a, b -> a + b }
+        val aggServiceOk    = statusSummaries.mapNotNull { it.serviceOk }.reduceOrNull { a, b -> a + b }
+
         return WidgetStatusSnapshot(
             sourceTitle        = sourceTitle,
             lastUpdated        = lastUpdated,
@@ -183,6 +193,10 @@ object WidgetSnapshotStore {
             critical           = critical,
             warning            = warning,
             unknown            = unknown,
+            hostTotal          = aggHostTotal,
+            hostUp             = aggHostUp,
+            serviceTotal       = aggServiceTotal,
+            serviceOk          = aggServiceOk,
             topProblems        = topProblems,
             instanceSummaries  = instanceSummaries,
             refreshState       = refreshState,

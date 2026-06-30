@@ -2,6 +2,7 @@ package com.exogroup.qnag.notifications
 
 import com.exogroup.qnag.data.NagiosProblem
 import com.exogroup.qnag.data.NagiosStatus
+import com.exogroup.qnag.data.NagiosStatusSummary
 import com.exogroup.qnag.widget.WidgetStatusSnapshot
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -24,6 +25,11 @@ data class CompactMonitoringSummary(
     val isPartialFailure: Boolean,
     val isFullFailure: Boolean,
     val topProblems: List<CompactProblemSummary> = emptyList(),
+    // Full Nagios totals — null until a fetch path provides them (best-effort)
+    val hostTotal: Int? = null,
+    val hostUp: Int? = null,
+    val serviceTotal: Int? = null,
+    val serviceOk: Int? = null,
 )
 
 data class CompactProblemSummary(
@@ -36,14 +42,45 @@ data class CompactProblemSummary(
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 
-fun CompactMonitoringSummary.toOneLineText(): String = when {
-    isFullFailure    -> "0/$instanceTotal instances reachable"
-    isPartialFailure -> "$instanceOk ok / $instanceFailed failed  ·  S C:$serviceCritical W:$serviceWarning U:$serviceUnknown"
-    totalProblems == 0 -> if (instanceTotal > 0) "All clear  ·  Inst $instanceOk/$instanceTotal" else "All clear"
-    else -> buildString {
-        if (instanceTotal > 1) append("Inst $instanceOk/$instanceTotal  ·  ")
-        append("H D:$hostDown U:$hostUnreachable  ·  S C:$serviceCritical W:$serviceWarning U:$serviceUnknown")
+fun CompactMonitoringSummary.toNotificationTitle(hideDetails: Boolean = false): String = when {
+    isFullFailure || isPartialFailure -> "qNag FAILURE"
+    hideDetails -> "qNag alert"
+    totalProblems == 0 -> "qNag: all clear"
+    serviceTotal != null -> {
+        // aNag-like: title shows monitoring instance health; content carries service totals
+        val instText = if (instanceTotal > 1) "$instanceOk ok / $instanceFailed failed" else "OK"
+        "qNag service: $instText"
     }
+    else -> buildList {
+        if (hostDown > 0) add("$hostDown host${if (hostDown > 1) "s" else ""} down")
+        if (hostUnreachable > 0) add("$hostUnreachable unreachable")
+        if (serviceCritical > 0) add("$serviceCritical critical")
+        if (serviceWarning > 0) add("$serviceWarning warning")
+        if (serviceUnknown > 0) add("$serviceUnknown unknown")
+    }.take(2).let { parts ->
+        if (parts.isEmpty()) "qNag: monitoring active"
+        else "qNag: ${parts.joinToString(" · ")}"
+    }
+}
+
+fun CompactMonitoringSummary.toOneLineText(): String = when {
+    isFullFailure    -> "All $instanceTotal instance${if (instanceTotal != 1) "s" else ""} failed to update"
+    isPartialFailure -> "$instanceOk of $instanceTotal ok  ·  $instanceFailed failed"
+    totalProblems == 0 -> if (instanceTotal > 1) "$instanceTotal instances OK" else "All clear"
+    serviceTotal != null -> "T:$serviceTotal / O:${serviceOk ?: "?"} / C:$serviceCritical / W:$serviceWarning / U:$serviceUnknown"
+    else -> buildList {
+        if (instanceTotal > 1) add("$instanceTotal instances")
+        if (hostDown == 0 && hostUnreachable == 0) {
+            add("hosts OK")
+        } else {
+            val hostParts = buildList {
+                if (hostDown > 0) add("DOWN:$hostDown")
+                if (hostUnreachable > 0) add("UNR:$hostUnreachable")
+            }.joinToString(" ")
+            add(hostParts)
+        }
+        add("C:$serviceCritical W:$serviceWarning U:$serviceUnknown")
+    }.joinToString("  ·  ")
 }
 
 fun CompactMonitoringSummary.toTwoLineText(): Pair<String, String> {
@@ -79,19 +116,42 @@ fun CompactMonitoringSummary.toBigText(): String {
         appendLine(sourceTitle)
         when {
             isFullFailure -> {
-                appendLine("0/$instanceTotal instances reachable")
+                appendLine("All $instanceTotal instance${if (instanceTotal != 1) "s" else ""} failed to update")
                 append("Open qNag for details")
             }
             isPartialFailure -> {
-                appendLine("Inst: $instanceOk ok / $instanceFailed failed")
-                appendLine("Hosts: DOWN $hostDown / UNR $hostUnreachable")
-                appendLine("Svc: CRIT $serviceCritical / WARN $serviceWarning / UNK $serviceUnknown")
-                append(if (time != null) "Updated $time  ·  partial" else "partial")
+                appendLine("Instances: $instanceOk ok / $instanceFailed failed")
+                if (hostTotal != null && hostUp != null) {
+                    appendLine("Hosts: T:$hostTotal / UP:$hostUp / DOWN:$hostDown / UNR:$hostUnreachable")
+                } else if (hostDown == 0 && hostUnreachable == 0) {
+                    appendLine("Hosts: OK")
+                } else {
+                    appendLine("Hosts: DOWN:$hostDown  UNR:$hostUnreachable")
+                }
+                if (serviceTotal != null && serviceOk != null) {
+                    appendLine("Services: T:$serviceTotal / OK:$serviceOk / CRIT:$serviceCritical / WARN:$serviceWarning / UNK:$serviceUnknown")
+                } else {
+                    appendLine("Services: C:$serviceCritical  W:$serviceWarning  U:$serviceUnknown")
+                }
+                if (time != null) append("Updated $time  ·  partial failure") else append("partial failure")
             }
             else -> {
-                if (instanceTotal > 0) appendLine("Inst: $instanceOk ok / $instanceFailed failed")
-                appendLine("Hosts: DOWN $hostDown / UNR $hostUnreachable")
-                appendLine("Svc: CRIT $serviceCritical / WARN $serviceWarning / UNK $serviceUnknown")
+                if (instanceTotal > 0) {
+                    if (instanceFailed == 0) appendLine("Instances: $instanceOk ok")
+                    else appendLine("Instances: $instanceOk ok / $instanceFailed failed")
+                }
+                if (hostTotal != null && hostUp != null) {
+                    appendLine("Hosts: T:$hostTotal / UP:$hostUp / DOWN:$hostDown / UNR:$hostUnreachable")
+                } else if (hostDown == 0 && hostUnreachable == 0) {
+                    appendLine("Hosts: OK")
+                } else {
+                    appendLine("Hosts: DOWN:$hostDown  UNR:$hostUnreachable")
+                }
+                if (serviceTotal != null && serviceOk != null) {
+                    appendLine("Services: T:$serviceTotal / OK:$serviceOk / CRIT:$serviceCritical / WARN:$serviceWarning / UNK:$serviceUnknown")
+                } else {
+                    appendLine("Services: C:$serviceCritical  W:$serviceWarning  U:$serviceUnknown")
+                }
                 if (time != null) append("Updated $time")
             }
         }
@@ -131,6 +191,10 @@ fun WidgetStatusSnapshot.toCompactSummary(): CompactMonitoringSummary {
                 pluginOutput = it.pluginOutput,
             )
         },
+        hostTotal    = this.hostTotal,
+        hostUp       = this.hostUp,
+        serviceTotal = this.serviceTotal,
+        serviceOk    = this.serviceOk,
     )
 }
 
@@ -140,6 +204,7 @@ fun buildCompactSummaryFromProblems(
     failedInstances: List<String>,
     instanceTotal: Int,
     lastUpdated: Long?,
+    statusSummaries: List<NagiosStatusSummary> = emptyList(),
 ): CompactMonitoringSummary {
     val hostDown = allProblems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_DOWN }
     val hostUnr  = allProblems.count { it.problem is NagiosProblem.HostProblem && it.problem.status == NagiosStatus.HOST_UNREACHABLE }
@@ -165,6 +230,12 @@ fun buildCompactSummaryFromProblems(
             pluginOutput = it.problem.pluginOutput.take(80).ifEmpty { null },
         )
     }
+    // Aggregate totals across all instances that returned summary data (best-effort)
+    val aggHostTotal    = statusSummaries.mapNotNull { it.hostTotal }.reduceOrNull { a, b -> a + b }
+    val aggHostUp       = statusSummaries.mapNotNull { it.hostUp }.reduceOrNull { a, b -> a + b }
+    val aggServiceTotal = statusSummaries.mapNotNull { it.serviceTotal }.reduceOrNull { a, b -> a + b }
+    val aggServiceOk    = statusSummaries.mapNotNull { it.serviceOk }.reduceOrNull { a, b -> a + b }
+
     return CompactMonitoringSummary(
         sourceTitle      = sourceTitle,
         instanceOk       = instanceOk,
@@ -180,6 +251,10 @@ fun buildCompactSummaryFromProblems(
         isPartialFailure = isPartial,
         isFullFailure    = isFull,
         topProblems      = topProblems,
+        hostTotal        = aggHostTotal,
+        hostUp           = aggHostUp,
+        serviceTotal     = aggServiceTotal,
+        serviceOk        = aggServiceOk,
     )
 }
 

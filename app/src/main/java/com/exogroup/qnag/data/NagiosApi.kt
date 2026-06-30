@@ -20,6 +20,12 @@ class NagiosApi {
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
+    // Short-timeout client for best-effort summary queries that must not slow alerting.
+    private val summaryClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .build()
+
     // ── Fetch ─────────────────────────────────────────────────────────────────
 
     fun fetchProblems(instance: NagiosInstance): List<NagiosProblem> {
@@ -147,6 +153,56 @@ class NagiosApi {
             )
         }
         return result
+    }
+
+    // ── Summary totals fetch (best-effort) ────────────────────────────────────
+
+    /**
+     * Fetch aggregate host and service counts from Nagios statusjson.cgi.
+     * Uses a short-timeout client so a slow or unavailable Nagios instance does not
+     * delay the main alert poll.  Always called with runCatching by the caller.
+     */
+    fun fetchStatusSummary(instance: NagiosInstance): NagiosStatusSummary {
+        val credential = Credentials.basic(instance.username, instance.password)
+
+        val hostCount = try {
+            val url = NagiosUrl.cgi(instance.url, "statusjson.cgi").toHttpUrl().newBuilder()
+                .addEncodedQueryParameter("query", "hostcount")
+                .build()
+            val body = executeSummary(url.toString(), credential)
+            JSONObject(body).optJSONObject("data")?.optJSONObject("count")
+        } catch (_: Exception) { null }
+
+        val serviceCount = try {
+            val url = NagiosUrl.cgi(instance.url, "statusjson.cgi").toHttpUrl().newBuilder()
+                .addEncodedQueryParameter("query", "servicecount")
+                .build()
+            val body = executeSummary(url.toString(), credential)
+            JSONObject(body).optJSONObject("data")?.optJSONObject("count")
+        } catch (_: Exception) { null }
+
+        return NagiosStatusSummary(
+            instanceId      = instance.id,
+            hostTotal       = hostCount?.let { if (it.has("total")) it.optInt("total") else null },
+            hostUp          = hostCount?.let { if (it.has("up")) it.optInt("up") else null },
+            hostDown        = hostCount?.optInt("down", 0) ?: 0,
+            hostUnreachable = hostCount?.optInt("unreachable", 0) ?: 0,
+            serviceTotal    = serviceCount?.let { if (it.has("total")) it.optInt("total") else null },
+            serviceOk       = serviceCount?.let { if (it.has("ok")) it.optInt("ok") else null },
+            serviceCritical = serviceCount?.optInt("critical", 0) ?: 0,
+            serviceWarning  = serviceCount?.optInt("warning", 0) ?: 0,
+            serviceUnknown  = serviceCount?.optInt("unknown", 0) ?: 0,
+            fetchedAt       = System.currentTimeMillis(),
+        )
+    }
+
+    private fun executeSummary(url: String, credential: String): String {
+        val request = Request.Builder().url(url).header("Authorization", credential).build()
+        summaryClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw Exception("HTTP ${response.code}: ${response.message}")
+            return response.body?.string()?.takeIf { it.isNotBlank() }
+                ?: throw Exception("Empty response")
+        }
     }
 
     // ── Acknowledgement comment fetch ─────────────────────────────────────────

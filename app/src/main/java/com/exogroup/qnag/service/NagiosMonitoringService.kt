@@ -18,6 +18,7 @@ import com.exogroup.qnag.sound.AlertSoundController
 import com.exogroup.qnag.sound.AlertSoundPlayer
 import com.exogroup.qnag.data.NagiosApi
 import com.exogroup.qnag.data.NagiosFetchRetry
+import com.exogroup.qnag.data.NagiosStatusSummary
 import com.exogroup.qnag.data.NotificationMode
 import com.exogroup.qnag.data.SecureInstanceStore
 import com.exogroup.qnag.data.applyFilters
@@ -33,6 +34,7 @@ import com.exogroup.qnag.notifications.NotificationHelper
 import com.exogroup.qnag.notifications.NotificationIconHelper
 import com.exogroup.qnag.notifications.buildCompactSummaryFromProblems
 import com.exogroup.qnag.notifications.toBigText
+import com.exogroup.qnag.notifications.toNotificationTitle
 import com.exogroup.qnag.notifications.toOneLineText
 import com.exogroup.qnag.widget.WidgetInstanceSummary
 import com.exogroup.qnag.widget.WidgetSnapshotStore
@@ -40,6 +42,7 @@ import com.exogroup.qnag.notifications.NotificationVisualState
 import com.exogroup.qnag.notifications.deriveVisualStateFromProblems
 import com.exogroup.qnag.notifications.visualStateColor
 import com.exogroup.qnag.data.EventLog
+import com.exogroup.qnag.data.UserMonitoringPause
 import com.exogroup.qnag.notifications.ProblemToNotify
 import com.exogroup.qnag.reliability.ExactAlarmWatchdogScheduler
 import com.exogroup.qnag.worker.BackgroundPollingScheduler
@@ -113,6 +116,12 @@ class NagiosMonitoringService : Service() {
             "notifEnabled=$notifEnabled hasTargets=$hasTargets " +
             "interval=${cmdSettings.foregroundPollingIntervalSeconds.coerceAtLeast(30)}s")
 
+        if (UserMonitoringPause.isPaused(applicationContext)) {
+            if (debug) android.util.Log.d("qNag", "[service] stopping: paused by user")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         if (!cmdSettings.keepMonitoringActive) {
             if (debug) android.util.Log.d("qNag", "[service] stopping: keepMonitoringActive=false")
             stopSelf()
@@ -156,6 +165,16 @@ class NagiosMonitoringService : Service() {
         val settings = store.getAppSettings()
         val instances = store.getInstances()
         val debug = settings.commandSettings.debugCommandSubmission
+
+        if (UserMonitoringPause.isPaused(applicationContext)) {
+            // User explicitly paused monitoring — cancel everything and do not reschedule
+            MonitoringHealth.recordServiceStop(applicationContext, "user_paused")
+            EventLog.info(applicationContext, EventLog.CAT_APP, "Foreground service stopped — paused by user")
+            ExactAlarmWatchdogScheduler.cancel(applicationContext)
+            BackgroundPollingScheduler.cancel(applicationContext)
+            super.onDestroy()
+            return
+        }
 
         if (!settings.commandSettings.keepMonitoringActive) {
             // User disabled reliability mode → cancel watchdog, use normal WorkManager scheduling
@@ -247,6 +266,7 @@ class NagiosMonitoringService : Service() {
             val widgetInstanceSummaries = mutableListOf<WidgetInstanceSummary>()
             var widgetFailCount = 0
             val failedInstanceNames = mutableListOf<String>()
+            val statusSummaries = mutableListOf<NagiosStatusSummary>()
             // Tier 2+ transition tracking: fingerprints that were waiting last poll
             val prevTier2WaitingFps = loadTier2WaitingFps()
             val newTier2WaitingFps  = mutableSetOf<String>()
@@ -329,6 +349,10 @@ class NagiosMonitoringService : Service() {
                     EventLog.info(applicationContext, EventLog.CAT_POLLING,
                         "Poll success — ${instance.name}: ${problems.size} problem(s)")
 
+                    // Best-effort totals fetch — short timeout, must not block alerting or fail instance
+                    runCatching { api.fetchStatusSummary(instance) }.getOrNull()
+                        ?.also { statusSummaries += it }
+
                     if (instance.id in failedIds) {
                         failedIds = failedIds - instance.id
                         if (notifSettings.notificationMode == NotificationMode.PER_PROBLEM) {
@@ -376,11 +400,9 @@ class NagiosMonitoringService : Service() {
                 failedInstances = failedInstanceNames,
                 instanceTotal   = targets.size,
                 lastUpdated     = System.currentTimeMillis(),
+                statusSummaries = statusSummaries,
             )
-            val persistentTitle = when {
-                compactSummary.isFullFailure || compactSummary.isPartialFailure -> "qNag FAILURE"
-                else -> "qNag  ·  $widgetSourceTitle"
-            }
+            val persistentTitle = compactSummary.toNotificationTitle()
             val persistentText  = compactSummary.toOneLineText()
             val persistentBig   = compactSummary.toBigText() +
                 "\nchecking every ${effectiveIntervalS}s"
@@ -465,6 +487,7 @@ class NagiosMonitoringService : Service() {
                 WidgetSnapshotStore.saveAndRefreshWidgets(
                     applicationContext, allFilteredProblems, System.currentTimeMillis(),
                     widgetSourceTitle, widgetInstanceSummaries, instanceFailed = widgetFailCount,
+                    statusSummaries = statusSummaries,
                 )
             }
 

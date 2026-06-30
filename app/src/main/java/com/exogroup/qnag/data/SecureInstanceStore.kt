@@ -85,6 +85,10 @@ class SecureInstanceStore(context: Context) : InstanceStore {
                 selectedDashboardScope = root.get("selectedDashboardScope")
                     ?.takeIf { !it.isJsonNull }?.asString ?: "ALL",
                 summaryExpanded = root.get("summaryExpanded")?.asBoolean ?: true,
+                alertListStyle = try {
+                    root.get("alertListStyle")?.takeIf { !it.isJsonNull }?.asString
+                        ?.let { AlertListStyle.valueOf(it) }
+                } catch (_: Exception) { null } ?: AlertListStyle.CLASSIC_ROWS,
             )
 
             // One-shot write-back: persist migrated regexRules into JSON so future loads

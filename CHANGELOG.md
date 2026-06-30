@@ -9,6 +9,46 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ---
 
+## [1.0.12] - 2026-06-30
+
+### Added
+
+- **"Stop Monitoring" Feature:** You can now fully pause background monitoring and notifications. When paused, a banner will appear on your Dashboard allowing you to easily resume.
+- **Dashboard Overflow Menu:** We've decluttered the top bar. "Manage instances", "Settings", and the new "Stop monitoring" option are now tucked neatly into a three-dot overflow menu.
+
+### Changed
+
+- The `+` (Add instance) button and Settings gear have been moved from the main dashboard top bar into the new overflow menu.
+- Pausing your monitoring temporarily overrides your Reliability Mode, so your saved settings are perfectly preserved when you hit Resume.
+
+---
+
+## [1.0.11] - Unreleased
+
+### Added
+
+- **Swipe Gestures for Classic Rows:** Classic rows now support the same quick-actions as Modern cards. Simply swipe right to Recheck or swipe left to ACK.
+- **Detailed Status Notifications:** When your Nagios server supports it, notifications and the home screen widget will now display comprehensive aNag-style host/service totals (e.g., "T:17249 / O:17216 / C:11").
+
+### Changed
+
+- Notification titles now dynamically update based on available monitoring totals to provide better at-a-glance context.
+
+---
+
+## [1.0.10] - Unreleased
+
+### Added
+
+- **New Dashboard Layout Options:** Head to Settings → Filters & Display to choose between three layout styles:
+- *Modern cards:* The default, spacious look.
+- *Detailed cards:* Cards are expanded by default.
+- *Classic rows:* A high-density, aNag-style view with inline details and action chips (tap to expand).
+
+
+- **Advanced Settings Category:** Command Activity and Event Log have been grouped into a collapsible "Advanced" section to reduce clutter in the main Settings menu. Settings search will still locate them easily.
+---
+
 ## [1.0.9] - 2026-06-30
 
 ### Fixed

@@ -11,6 +11,7 @@ import androidx.work.WorkManager
 import com.exogroup.qnag.data.AppSettings
 import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.data.NagiosInstance
+import com.exogroup.qnag.data.UserMonitoringPause
 import java.util.concurrent.TimeUnit
 
 /**
@@ -80,6 +81,7 @@ object BackgroundPollingScheduler {
      * Only schedules if notifications are enabled and at least one eligible instance exists.
      */
     fun scheduleFallback(context: Context, settings: AppSettings, instances: List<NagiosInstance>) {
+        if (UserMonitoringPause.isPaused(context)) return
         val hasEligibleInstance = instances.any { it.enabled && it.notificationsEnabled }
         if (settings.notificationSettings.notificationsEnabled && hasEligibleInstance) {
             schedule(context, settings.notificationSettings.refreshIntervalMinutes)
@@ -96,6 +98,7 @@ object BackgroundPollingScheduler {
      * The periodic WorkManager job is unaffected.
      */
     fun scheduleOnce(context: Context) {
+        if (UserMonitoringPause.isPaused(context)) return
         val request = OneTimeWorkRequestBuilder<NagiosPollingWorker>()
             .setConstraints(
                 Constraints.Builder()

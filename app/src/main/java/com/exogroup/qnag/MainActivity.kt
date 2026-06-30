@@ -21,10 +21,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.exogroup.qnag.data.AppSettings
+import com.exogroup.qnag.data.EventLog
 import com.exogroup.qnag.data.ImportParseResult
 import com.exogroup.qnag.data.MonitoringHealth
 import com.exogroup.qnag.data.NagiosInstance
 import com.exogroup.qnag.data.SecureInstanceStore
+import com.exogroup.qnag.data.UserMonitoringPause
 import com.exogroup.qnag.data.applyImport
 import com.exogroup.qnag.data.exportInstancesToJson
 import com.exogroup.qnag.data.parseImportJson
@@ -75,6 +77,10 @@ class MainActivity : ComponentActivity() {
     // Compose-state holder for notification permission — updated in the result callback
     // so SettingsScreen immediately reflects the new grant/deny state.
     private var notifPermissionGranted = mutableStateOf(false)
+
+    // Compose-state holder for user-initiated monitoring pause — updated in onResume and
+    // by the stop/resume actions so the Dashboard banner reacts without recomposing the whole tree.
+    private var isMonitoringPaused = mutableStateOf(false)
 
     private val requestNotifPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
@@ -136,6 +142,7 @@ class MainActivity : ComponentActivity() {
 
         NotificationHelper.createChannels(this)
         notifPermissionGranted.value = NotificationHelper.hasPermission(this)
+        isMonitoringPaused.value = UserMonitoringPause.isPaused(this)
         // Auto-restart on cold start (also covers package replace / force-stop recovery)
         autoRestartIfEligible()
 
@@ -148,7 +155,8 @@ class MainActivity : ComponentActivity() {
 
                     var instances by remember { mutableStateOf(store.getInstances()) }
                     var appSettings by remember { mutableStateOf(store.getAppSettings()) }
-                    val notifPermGranted by notifPermissionGranted  // observe the Activity-level state
+                    val notifPermGranted by notifPermissionGranted    // observe the Activity-level state
+                    val monitoringPaused by isMonitoringPaused        // observe the Activity-level state
 
                     // ── Import/export ──────────────────────────────────────────
                     val pendingJson  by pendingImportJson   // observe Activity-level state
@@ -336,10 +344,30 @@ class MainActivity : ComponentActivity() {
                                 filterSettings = appSettings.filterSettings,
                                 notificationSettings = appSettings.notificationSettings,
                                 commandSettings = appSettings.commandSettings,
+                                alertListStyle = appSettings.alertListStyle,
                                 onSwitchInstance = { screen = AppScreen.Dashboard(it) },
                                 onAddNewInstance = { screen = AppScreen.AddInstance },
+                                onManageInstances = { screen = AppScreen.Settings(s.instance) },
                                 onOpenSettings = { screen = AppScreen.Settings(s.instance) },
                                 onOpenCommandActivity = { screen = AppScreen.CommandActivity(s.instance) },
+                                isMonitoringPaused = monitoringPaused,
+                                onResumeMonitoring = {
+                                    UserMonitoringPause.clearPaused(this@MainActivity)
+                                    isMonitoringPaused.value = false
+                                    applyPollingMode(appSettings, instances)
+                                },
+                                onStopMonitoringAndExit = {
+                                    UserMonitoringPause.markPaused(this@MainActivity)
+                                    NagiosMonitoringService.stop(this@MainActivity)
+                                    BackgroundPollingScheduler.cancel(this@MainActivity)
+                                    ExactAlarmWatchdogScheduler.cancel(this@MainActivity)
+                                    NotificationHelper.cancelAlertSummary(this@MainActivity)
+                                    NotificationHelper.cancelStale(this@MainActivity)
+                                    NotificationHelper.cancelRefreshFailure(this@MainActivity)
+                                    EventLog.info(this@MainActivity, EventLog.CAT_APP, "qNag monitoring paused by user")
+                                    isMonitoringPaused.value = true
+                                    finishAndRemoveTask()
+                                },
                                 initialDashboardScope = appSettings.selectedDashboardScope,
                                 onScopeChanged = { newScope ->
                                     val updated = appSettings.copy(selectedDashboardScope = newScope)
@@ -369,6 +397,12 @@ class MainActivity : ComponentActivity() {
                                 notificationSettings = appSettings.notificationSettings,
                                 commandSettings = appSettings.commandSettings,
                                 notificationPermissionGranted = notifPermGranted,
+                                alertListStyle = appSettings.alertListStyle,
+                                onUpdateAlertListStyle = { style ->
+                                    val updated = appSettings.copy(alertListStyle = style)
+                                    store.saveAppSettings(updated)
+                                    appSettings = updated
+                                },
                                 onUpdateInstances = { onInstancesUpdated(it) },
                                 onUpdateFilterSettings = { newFilters ->
                                     val updated = appSettings.copy(filterSettings = newFilters)
@@ -432,6 +466,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         notifPermissionGranted.value = NotificationHelper.hasPermission(this)
+        isMonitoringPaused.value = UserMonitoringPause.isPaused(this)
         // Auto-restart Reliability Mode when the user opens/resumes the app.
         // Only reads from the store when Reliability Mode is ON and service has died,
         // to avoid expensive reads on every resume.
@@ -444,6 +479,7 @@ class MainActivity : ComponentActivity() {
      * and health prefs show the service is not running.
      */
     private fun autoRestartIfEligible() {
+        if (UserMonitoringPause.isPaused(this)) return  // paused by user — do not auto-restart
         val snapshot = MonitoringHealth.getSnapshot(this)
         if (snapshot.isServiceRunning) return  // fast-path: service alive, nothing to do
         val store = SecureInstanceStore(this)
@@ -463,6 +499,7 @@ class MainActivity : ComponentActivity() {
      *  - !keepMonitoringActive             → stop foreground service, scheduleOrCancel WorkManager
      */
     private fun applyPollingMode(settings: AppSettings, instances: List<NagiosInstance>) {
+        if (UserMonitoringPause.isPaused(this)) return  // do not restart while paused by user
         val eligible = settings.notificationSettings.notificationsEnabled &&
                 instances.any { it.enabled && it.notificationsEnabled }
         val debug = settings.commandSettings.debugCommandSubmission
