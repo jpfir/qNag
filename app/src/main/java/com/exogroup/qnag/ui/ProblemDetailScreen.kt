@@ -30,6 +30,7 @@ import com.exogroup.qnag.data.NagiosStatus
 import com.exogroup.qnag.data.NagiosUrl
 import com.exogroup.qnag.viewmodel.AckCommentState
 import com.exogroup.qnag.viewmodel.CommandState
+import com.exogroup.qnag.viewmodel.DashboardState
 import com.exogroup.qnag.viewmodel.NagiosViewModel
 import java.net.URLEncoder
 
@@ -115,6 +116,33 @@ fun ProblemDetailScreen(
     DisposableEffect(Unit) {
         onDispose { nagiosViewModel.clearAckCommentState() }
     }
+
+    // Raw problem list from the ViewModel — Null when no fetch has completed yet (Idle state).
+    // Non-null even during Loading/Error if stale data exists from a prior successful fetch.
+    val rawProblems: List<NagiosProblem>? = when (val s = nagiosViewModel.uiState) {
+        is DashboardState.Success -> s.problems
+        is DashboardState.Loading -> s.previousProblems
+        is DashboardState.Error   -> s.previousProblems
+        else                      -> null
+    }
+    // Related service problems: same instance + same hostName, sorted by severity.
+    // Only computed for host problems; null for service problems or when data is unavailable.
+    val relatedServices: List<NagiosProblem.ServiceProblem>? = if (problem is NagiosProblem.HostProblem) {
+        val resolvedInstanceId = problem.instanceId.ifEmpty { instance?.id ?: "" }
+        rawProblems?.filterIsInstance<NagiosProblem.ServiceProblem>()
+            ?.filter { svc ->
+                val svcInstId = svc.instanceId.ifEmpty { resolvedInstanceId }
+                svcInstId == resolvedInstanceId && svc.hostName == problem.hostName
+            }
+            ?.sortedBy { svc ->
+                when (svc.status) {
+                    NagiosStatus.SERVICE_CRITICAL -> 0
+                    NagiosStatus.SERVICE_WARNING  -> 1
+                    NagiosStatus.SERVICE_UNKNOWN  -> 2
+                    else                          -> 3
+                }
+            }
+    } else null
 
     Scaffold(
         topBar = {
@@ -291,6 +319,13 @@ fun ProblemDetailScreen(
                     modifier = Modifier.padding(start = 0.dp),
                 ) { Text("Copy output", style = MaterialTheme.typography.bodySmall) }
                 Spacer(Modifier.height(8.dp))
+            }
+
+            // Related service alerts — host problems only, shown when data is available or list is non-empty
+            if (problem is NagiosProblem.HostProblem && (relatedServices == null || relatedServices.isNotEmpty())) {
+                item {
+                    RelatedServicesSection(relatedServices)
+                }
             }
 
             // Acknowledgement section — server-acked, locally-acked, or any ack metadata present
@@ -520,6 +555,140 @@ private fun DetailRow(label: String, value: String) {
             modifier = Modifier.width(130.dp),
         )
         Text(value, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+// ── Related services section (host problems) ─────────────────────────────────
+
+private const val RELATED_SERVICES_INITIAL_SHOW = 8
+
+/**
+ * Shows related service alerts for a host problem.
+ *
+ * [relatedServices] is null when the raw problem list has not loaded yet (app just opened);
+ * an empty list means the host has no active service alerts.
+ */
+@Composable
+private fun RelatedServicesSection(relatedServices: List<NagiosProblem.ServiceProblem>?) {
+    DetailSectionHeader("Related service alerts")
+    if (relatedServices == null) {
+        Text(
+            "Related service alerts unavailable — refresh qNag to load current data.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        return
+    }
+    val critCount = relatedServices.count { it.status == NagiosStatus.SERVICE_CRITICAL }
+    val warnCount = relatedServices.count { it.status == NagiosStatus.SERVICE_WARNING }
+    val unkCount  = relatedServices.count { it.status == NagiosStatus.SERVICE_UNKNOWN }
+    val ackCount  = relatedServices.count { it.acknowledged }
+    val summaryParts = buildList {
+        add("${relatedServices.size} service${if (relatedServices.size != 1) "s" else ""}")
+        if (critCount > 0) add("CRIT $critCount")
+        if (warnCount > 0) add("WARN $warnCount")
+        if (unkCount > 0)  add("UNK $unkCount")
+        if (ackCount > 0)  add("$ackCount ACKed")
+    }
+    Text(
+        summaryParts.joinToString(" · "),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(6.dp))
+    var showAll by remember(relatedServices.size) {
+        mutableStateOf(relatedServices.size <= RELATED_SERVICES_INITIAL_SHOW)
+    }
+    val toShow = if (showAll) relatedServices else relatedServices.take(RELATED_SERVICES_INITIAL_SHOW)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        toShow.forEach { svc -> RelatedServiceRow(svc) }
+    }
+    if (relatedServices.size > RELATED_SERVICES_INITIAL_SHOW) {
+        TextButton(
+            onClick = { showAll = !showAll },
+            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
+        ) {
+            Text(
+                if (showAll) "Show fewer" else "Show all ${relatedServices.size}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+}
+
+@Composable
+private fun RelatedServiceRow(svc: NagiosProblem.ServiceProblem) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        // Status chip
+        val (bgColor, fgColor) = when (svc.status) {
+            NagiosStatus.SERVICE_CRITICAL -> Color(0xFFB71C1C) to Color.White
+            NagiosStatus.SERVICE_WARNING  -> Color(0xFFE65100) to Color.White
+            NagiosStatus.SERVICE_UNKNOWN  -> Color(0xFF6A1B9A) to Color.White
+            else                          -> Color(0xFF616161) to Color.White
+        }
+        val statusLabel = when (svc.status) {
+            NagiosStatus.SERVICE_CRITICAL -> "CRIT"
+            NagiosStatus.SERVICE_WARNING  -> "WARN"
+            NagiosStatus.SERVICE_UNKNOWN  -> "UNK"
+            else                          -> serviceStatusLabel(svc.status)
+        }
+        Surface(shape = RoundedCornerShape(4.dp), color = bgColor, contentColor = fgColor) {
+            Text(
+                statusLabel,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+            )
+        }
+        // Service name + badges + output
+        Column(modifier = Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    svc.serviceName,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (svc.acknowledged) {
+                    Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFF388E3C), contentColor = Color.White) {
+                        Text("ACK", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
+                    }
+                }
+                if (svc.scheduledDowntimeDepth > 0) {
+                    Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFFE3F2FD), contentColor = Color(0xFF1565C0)) {
+                        Text("DT", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
+                    }
+                }
+                if (!svc.notificationsEnabled) {
+                    Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFFF5F5F5), contentColor = Color(0xFF616161)) {
+                        Text("NOTIF OFF", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
+                    }
+                }
+            }
+            if (svc.pluginOutput.isNotBlank()) {
+                Text(
+                    svc.pluginOutput,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 

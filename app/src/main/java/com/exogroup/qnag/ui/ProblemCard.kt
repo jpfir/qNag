@@ -57,6 +57,8 @@ fun ProblemCard(
     isTier2Waiting: Boolean = false,
     // Non-empty when this problem is hidden by saved filters (show-hidden mode)
     hiddenReasons: List<HiddenReason> = emptyList(),
+    // Active service problem count on the same host+instance — shown as a hint on HOST DOWN cards
+    relatedServiceCount: Int = 0,
     // False while the list is scrolling or within 250 ms of scroll stop; also false in selection mode
     swipeAllowed: Boolean = true,
     onOpenDetail: (() -> Unit)? = null,
@@ -218,6 +220,7 @@ fun ProblemCard(
                     isRecheckPending = isRecheckPending,
                     isTier2Waiting = isTier2Waiting,
                     hiddenReasons = hiddenReasons,
+                    relatedServiceCount = relatedServiceCount,
                     onUnack = onUnack,
                     onAck = onAck,
                     onRecheck = onRecheck,
@@ -244,6 +247,7 @@ private fun ProblemCardContent(
     isRecheckPending: Boolean = false,
     isTier2Waiting: Boolean = false,
     hiddenReasons: List<HiddenReason> = emptyList(),
+    relatedServiceCount: Int = 0,
     onUnack: (() -> Unit)? = null,
     onAck: () -> Unit = {},
     onRecheck: () -> Unit = {},
@@ -255,6 +259,17 @@ private fun ProblemCardContent(
     onAckAllServicesOnHost: (() -> Unit)? = null,
     onRecheckAllServicesOnHost: (() -> Unit)? = null,
 ) {
+    val isHostDown = problem is NagiosProblem.HostProblem && problem.status == NagiosStatus.HOST_DOWN
+    val dark = isSystemInDarkTheme()
+    Column {
+        if (isHostDown) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .background(if (dark) Color(0xFFEF5350) else Color(0xFFB71C1C)),
+            )
+        }
     Column(modifier = Modifier.padding(12.dp)) {
         // ── Name block — instance chip floats to top-right so names use full width ──
         Row(
@@ -278,12 +293,28 @@ private fun ProblemCardContent(
                         )
                     }
                     is NagiosProblem.HostProblem -> {
-                        Text(
-                            "[HOST] ${problem.hostName}",
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        if (problem.status == NagiosStatus.HOST_DOWN) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                HostDownBadge()
+                                Text(
+                                    problem.hostName,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        } else {
+                            Text(
+                                "[HOST] ${problem.hostName}",
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
             }
@@ -370,6 +401,23 @@ private fun ProblemCardContent(
                         )
                     }
                 }
+            }
+        }
+
+        // Root-cause hint — shown only on HOST DOWN cards; subtle but visible
+        if (isHostDown) {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "Root cause · related services may be affected",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (relatedServiceCount > 0) {
+                Text(
+                    "$relatedServiceCount related service alert${if (relatedServiceCount != 1) "s" else ""}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
@@ -464,6 +512,7 @@ private fun ProblemCardContent(
             }
         }
     }
+    } // end outer Column (HOST DOWN styling wrapper)
 }
 
 @Composable
@@ -603,6 +652,23 @@ private fun NewBadge() {
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+        )
+    }
+}
+
+/** Bold red pill marking a HOST DOWN card as the root cause — distinct from service CRITICAL cards. */
+@Composable
+private fun HostDownBadge() {
+    Surface(
+        shape = RoundedCornerShape(4.dp),
+        color = Color(0xFFC62828),
+        contentColor = Color.White,
+    ) {
+        Text(
+            "HOST DOWN",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
         )
     }
 }

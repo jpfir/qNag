@@ -986,6 +986,14 @@ private fun ProblemList(
         }
     }
 
+    // Count active service problems per host+instance — used to show an impact hint on HOST DOWN cards.
+    // Computed once per rawProblems refresh (O(n)); not re-computed per card.
+    val relatedServiceCounts = remember(rawProblems) {
+        rawProblems.filterIsInstance<NagiosProblem.ServiceProblem>()
+            .groupBy { "${it.instanceId}|${it.hostName}" }
+            .mapValues { it.value.size }
+    }
+
     val rows = remember(problems, hiddenProblems) {
         buildSectionedRows(problems) + buildHiddenRows(hiddenProblems, hiddenReasonsFor)
     }
@@ -1017,6 +1025,9 @@ private fun ProblemList(
                             instanceName = if (showInstanceNames) problem.instanceName else "",
                             isRecheckPending = isRecheckPending(problem),
                             hiddenReasons = row.hiddenReasons,
+                            relatedServiceCount = if (problem is NagiosProblem.HostProblem && problem.status == NagiosStatus.HOST_DOWN) {
+                                relatedServiceCounts["${problem.instanceId}|${problem.hostName}"] ?: 0
+                            } else 0,
                             swipeAllowed = swipeAllowed && !isSelectionMode,
                             onOpenDetail = { onOpenProblemDetail(problem) },
                             onCopyOutput = {
